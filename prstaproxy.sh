@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-# ПРОСТО WEB PROXY v8: WebMTProxy based on telegramdesktop/tproxy-server, existing Docker SelfSteal Caddy.
-# Tested target: Ubuntu 24.04 x86_64. Does NOT install/alter SelfSteal.
-DOMAIN=""; EMAIL=""; MODE="https"; TAG=""; BASE=/opt/prostoweb
+# ПРОСТОВПН WEB PROXY: container installer and legacy service management.
+DOMAIN=${DOMAIN:-}; EMAIL=""; MODE=${MODE:-https}; TAG=""; BASE=${BASE:-/opt/prostoweb}
 RELAY_PORT=""; ADMIN_PORT=""
 NCONF=/etc/nginx/sites-available/prostoweb; NLINK=/etc/nginx/sites-enabled/prostoweb
-LOG=/var/log/prostoweb-install.log
+LOG=${LOG:-/var/log/prostoweb-install.log}
 red=$'\033[31m'; green=$'\033[32m'; cyan=$'\033[36m'; clear=$'\033[0m'
 info(){ printf '%s[•]%s %s\n' "$cyan" "$clear" "$*"; }
 warn(){ printf "%s[!]%s %s\n" "$cyan" "$clear" "$*"; }
@@ -34,196 +33,24 @@ configured_admin_port(){
 valid_domain(){ [[ "$1" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && "$1" == *.* && "$1" != *..* ]]; }
 backup(){ local b="$BASE/backups/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$b"; chmod 700 "$b"; for f in /etc/tproxy-server/config.json /etc/tproxy-server/profiles.json /etc/mtproxy/mtproxy.env "$NCONF"; do [[ ! -f "$f" ]] || cp -a --parents "$f" "$b"; done; echo "Backup: $b"; }
 
-install_new(){
- [[ $EUID -eq 0 ]] || die 'Запусти от root.'
- [[ -r /etc/os-release ]] || die 'Не найдена /etc/os-release.'
- . /etc/os-release
- [[ "$ID" == ubuntu && "$VERSION_ID" == 24.04 && "$(uname -m)" == x86_64 ]] || die 'Нужна Ubuntu 24.04 x86_64.'
- for f in /etc/tproxy-server/config.json /etc/systemd/system/mtproxy.service /etc/systemd/system/tproxy-server.service "$NCONF" "$NLINK"; do [[ ! -e "$f" && ! -L "$f" ]] || die "Обнаружена существующая установка: $f. Не перезаписываю."; done
- ask DOMAIN 'Домен WEB Proxy (A-запись должна вести на этот сервер)'
- DOMAIN=${DOMAIN,,}; valid_domain "$DOMAIN" || die 'Некорректный домен.'
- ask EMAIL 'Email для контакта (WebMTProxy)' 'admin@example.com'
- [[ "$EMAIL" =~ ^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || die 'Некорректный email.'
- local sel
- choose_transport sel 'Режим WEB Proxy при установке'
- case "$sel" in 1) MODE=https;; 2) MODE=https-lanes;; 3) MODE=websocket;; 4) MODE=websocket-lanes;; *) die 'Неверный режим.';; esac
- warn 'Спонсорский тег необязателен. Установка тега не гарантирует показ канала в Telegram WEB.'
- ask TAG 'Тег спонсора, 32 hex (Enter — пропустить)' ''
- [[ -z "$TAG" || "$TAG" =~ ^[0-9a-fA-F]{32}$ ]] || die 'Тег должен быть 32 hex.'
- local caddy_domain data certdir cert key ip dns
- command -v docker >/dev/null || die 'Сначала отдельно установи SelfSteal/Docker.'
- docker inspect caddy-selfsteal >/dev/null 2>&1 || die 'Не найден caddy-selfsteal. Сначала установи SelfSteal отдельно.'
- [[ "$(docker inspect -f '{{.State.Running}}' caddy-selfsteal)" == true ]] || die 'SelfSteal Caddy не запущен.'
- [[ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' caddy-selfsteal)" == host ]] || die 'SelfSteal ожидается в host network.'
- [[ -s /opt/caddy/html/index.html && -f /opt/caddy/.env ]] || die 'Нет сайта или .env SelfSteal.'
- grep -Fxq "SELF_STEAL_DOMAIN=$DOMAIN" /opt/caddy/.env || die 'У SelfSteal другой домен. Проверь /opt/caddy/.env.'
- data=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' caddy-selfsteal)
- [[ -n "$data" && -d "$data" ]] || die 'Не найден том Caddy /data.'
- certdir="$data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/$DOMAIN"
- cert="$certdir/$DOMAIN.crt"; key="$certdir/$DOMAIN.key"
- info 'Ожидание существующего сертификата Caddy (до 3 минут)'
- for i in $(seq 1 90); do [[ -s "$cert" && -s "$key" ]] && break; sleep 2; done
- [[ -s "$cert" && -s "$key" ]] || die 'Сертификат Caddy не найден.'
- openssl x509 -in "$cert" -noout -checkend 86400 >/dev/null || die 'Сертификат недействителен или скоро истечёт.'
- openssl x509 -in "$cert" -noout -ext subjectAltName | grep -Fq "DNS:$DOMAIN" || die 'Сертификат не соответствует домену.'
- for port in 443 2398 8888; do port_busy "$port" && die "Порт $port занят — установка остановлена."; done
- choose_relay_ports
- port_busy 80 || die 'Caddy SelfSteal не слушает 80.'
- ip=$(curl -4fsS --max-time 10 https://api.ipify.org) || die 'Не удалось получить IP.'
- dns=$(getent ahostsv4 "$DOMAIN" | awk '{print $1}' | sort -u) || true
- grep -Fxq "$ip" <<< "$dns" || die "DNS $DOMAIN -> $dns, IP сервера $ip."
- if [[ -e /etc/nginx/sites-enabled/default && ! -L /etc/nginx/sites-enabled/default ]]; then die 'Нестандартный сайт Nginx default.'; fi
- if [[ -d /etc/nginx/sites-enabled ]] && find /etc/nginx/sites-enabled -mindepth 1 -maxdepth 1 ! -name default | grep -q .; then die 'Nginx уже содержит активные сайты.'; fi
- printf '\nДомен: %s\nРежим: %s\nСайт: /opt/caddy/html\nTLS: сертификат SelfSteal\nСпонсор: %s\n' "$DOMAIN" "$MODE" "${TAG:-выключен}"
- yesno 'Начать установку? SelfSteal не будет изменён.' || return 0
- mkdir -p "$BASE"; chmod 700 "$BASE"
- : > "$LOG"; chmod 600 "$LOG"
- export DEBIAN_FRONTEND=noninteractive
- info 'Установка недостающих пакетов (без Docker и containerd)'
- apt-get update >> "$LOG" 2>&1
- apt-get install -y --no-install-recommends git curl ca-certificates nginx openssl python3 qrencode nftables >> "$LOG" 2>&1 || die "Ошибка apt. Последние строки: $(tail -n 5 "$LOG")"
- local tmp; tmp=$(mktemp -d)
- trap 'rm -rf "${tmp:-}"' EXIT
- info 'Загружаю исходники WebMTProxy и Telegram tproxy-server'
- if [[ -d "$BASE/WebMTProxy/.git" ]]; then
-  [[ "$(git -C "$BASE/WebMTProxy" remote get-url origin)" == 'https://github.com/slowriverr/WebMTProxy.git' ]] || die 'Неверный существующий репозиторий WebMTProxy.'
-  info 'Уже скачанные исходники WebMTProxy использую повторно'
- else
-  git clone --depth 1 https://github.com/slowriverr/WebMTProxy.git "$BASE/WebMTProxy" >> "$LOG" 2>&1 || die 'Ошибка загрузки WebMTProxy.'
- fi
- if [[ -d "$BASE/tproxy-server/.git" ]]; then
-  [[ "$(git -C "$BASE/tproxy-server" remote get-url origin)" == 'https://github.com/telegramdesktop/tproxy-server.git' ]] || die 'Неверный существующий репозиторий tproxy-server.'
-  git -C "$BASE/tproxy-server" restore -- deploy/install.sh || die 'Не удалось восстановить исходный upstream install.sh'
-  info 'Уже скачанные исходники tproxy-server использую повторно'
- else
-  git clone --depth 1 https://github.com/telegramdesktop/tproxy-server.git "$BASE/tproxy-server" >> "$LOG" 2>&1 || die 'Ошибка загрузки tproxy-server.'
- fi
- local upstream="$BASE/tproxy-server/deploy/install.sh"
- cp "$upstream" "$tmp/upstream.original.sh"
- # Patch upstream installer without Caddy install/overwrite/start. FAIL CLOSED if source markers have changed.
- python3 - "$upstream" "$RELAY_PORT" "$ADMIN_PORT" <<'PY'
-from pathlib import Path
-import sys
-p=Path(sys.argv[1]); s=p.read_text()
-relay_port=sys.argv[2]; admin_port=sys.argv[3]
-def remove(start,end):
- global s
- if s.count(start)!=1 or s.count(end)!=1: raise SystemExit('Upstream layout changed; refusing to patch Caddy integration')
- a=s.index(start); b=s.index(end)
- if b<=a: raise SystemExit('Bad upstream ordering')
- s=s[:a]+s[b:]
-remove('caddy_version=2.11.4', '"$repository/deploy/install-mtproxy.sh"')
-remove('install -m 0644 "$repository/deploy/Caddyfile" /etc/caddy/Caddyfile.tproxy\n', 'install -m 0644 "$repository/deploy/tproxy-server.service"')
-# The web relay and MTProxy must remain; Caddy checks and starts must not.
-needle='TPROXY_HOSTNAME="$hostname" TPROXY_SITE_ROOT=/srv/tproxy-site ACME_EMAIL="$email" \\\n\t/usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile\n'
-if s.count(needle)!=1: raise SystemExit('Upstream Caddy validation location changed; abort')
-s=s.replace(needle,'')
-for line in ('systemctl enable --now caddy.service\n','systemctl restart caddy.service\n'):
- if s.count(line)!=1: raise SystemExit('Upstream Caddy start markers changed; abort')
- s=s.replace(line,'')
-# Avoid restrictive umask breaking MTProxy executable or Go tests (same upstream issue as WebMTProxy).
-checks=[('"$repository/deploy/install-mtproxy.sh"','(umask 022; "$repository/deploy/install-mtproxy.sh")'),
- ('(cd "$repository" && "$go_binary" test ./...)','(umask 022; cd "$repository" && "$go_binary" test ./...)')]
-for old,new in checks:
- if s.count(old)!=1: raise SystemExit('Upstream build/test block changed; abort')
- s=s.replace(old,new)
-if s.count('127.0.0.1:8080') != 1 or s.count('127.0.0.1:8081') < 2:
- raise SystemExit('Upstream port structure changed, abort')
-s=s.replace('127.0.0.1:8080', '127.0.0.1:'+relay_port)
-s=s.replace('127.0.0.1:8081', '127.0.0.1:'+admin_port)
-p.write_text(s)
-PY
- bash -n "$upstream" || die 'Изменённый upstream-скрипт не прошёл bash -n.'
- if grep -Eq '/usr/local/bin/caddy|systemctl (enable|restart).*caddy\.service|/etc/caddy/Caddyfile' "$upstream"; then die 'Остались команды Caddy в upstream — остановка.'; fi
- info 'Готовлю Nginx: НЕ занимает :80 и НЕ перехватывает /?bridge='
- systemctl stop nginx >/dev/null 2>&1 || true
- if [[ -L /etc/nginx/sites-enabled/default ]]; then mkdir -p "$BASE/backups"; mv /etc/nginx/sites-enabled/default "$BASE/backups/nginx-default-link"; fi
- [[ -d /etc/nginx/sites-enabled ]] || mkdir -p /etc/nginx/sites-enabled
- local secret; secret=$(openssl rand -hex 16)
- # Upstream creates its own local backend and firewall; we disable ONLY its Caddy integration.
- info 'Сборка и установка backend MTProxy + tproxy-server (несколько минут)'
- if ! bash "$upstream" --hostname "$DOMAIN" --email "$EMAIL" --secret "dd$secret" --base-path none --site-dir /opt/caddy/html >> "$LOG" 2>&1; then
-  tail -n 35 "$LOG" >&2; die "Backend не установился. Nginx не запущен; лог $LOG"; fi
- mkdir -p /etc/nginx/sites-available
- cat > "$NCONF" <<EOF
-map \$http_upgrade \$prostoweb_upgrade { default upgrade; '' close; }
-server {
- listen 443 ssl http2;
- server_name $DOMAIN;
- ssl_certificate $cert;
- ssl_certificate_key $key;
- client_max_body_size 2m;
- server_tokens off;
- location / {
-  proxy_pass http://127.0.0.1:$RELAY_PORT;
-  proxy_http_version 1.1;
-  proxy_set_header Host \$host;
-  proxy_set_header X-Forwarded-For \$remote_addr;
-  proxy_set_header X-Forwarded-Proto https;
-  proxy_set_header Upgrade \$http_upgrade;
-  proxy_set_header Connection \$prostoweb_upgrade;
-  proxy_connect_timeout 5s;
-  proxy_send_timeout 90s;
-  proxy_read_timeout 90s;
-  proxy_request_buffering off;
-  proxy_buffering off;
-  proxy_next_upstream off;
- }
-}
-EOF
- ln -s "$NCONF" "$NLINK"
- if ! nginx -t; then rm -f "$NLINK" "$NCONF"; die 'Ошибка Nginx; конфигурация удалена, SelfSteal сохранён.'; fi
- systemctl enable --now nginx >> "$LOG" 2>&1 || die 'Ошибка запуска Nginx.'
- printf 'RELAY_PORT=%s\nADMIN_PORT=%s\n' "$RELAY_PORT" "$ADMIN_PORT" > "$BASE/ports.env"
- chmod 600 "$BASE/ports.env"
- local health=""; for i in $(seq 1 45); do if curl -fsS --max-time 2 http://127.0.0.1:$ADMIN_PORT/readyz >/dev/null; then health=ok; break; fi; sleep 2; done
- [[ "$health" == ok ]] || die 'Relay ещё не готов. Проверь systemctl status tproxy-server mtproxy.'
- info 'Устанавливаю штатную панель WebMTProxy'
- mkdir -p /opt/webmtproxy; cp -a "$BASE/WebMTProxy/." /opt/webmtproxy/
- install -m 755 /opt/webmtproxy/webmtproxy /usr/local/bin/webmtproxy
- webmtproxy mode "$MODE" >> "$LOG" 2>&1 || die 'Не удалось применить транспорт.'
- if [[ -n "$TAG" ]]; then webmtproxy sponsor "$TAG" >> "$LOG" 2>&1 || die 'Не удалось применить тег спонсора.'; fi
- cat > /etc/systemd/system/prostoweb-tls-refresh.service <<'EOF'
-[Unit]
-Description=Reload Nginx after SelfSteal Caddy certificate renewal
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c '/usr/sbin/nginx -t && /bin/systemctl reload nginx'
-EOF
- cat > /etc/systemd/system/prostoweb-tls-refresh.timer <<'EOF'
-[Unit]
-Description=Daily Nginx TLS certificate refresh
-[Timer]
-OnCalendar=daily
-Persistent=true
-[Install]
-WantedBy=timers.target
-EOF
- systemctl daemon-reload; systemctl enable --now prostoweb-tls-refresh.timer >/dev/null
- [[ "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/")" == 200 ]] || die 'Сайт по HTTPS не отвечает 200.'
- ok 'Установка серверных компонентов завершена.'
- warn 'HTTPS проверен, но работу WEB Proxy необходимо подтвердить в Telegram-клиенте.'
- info "Ссылка: $(webmtproxy link)"
- info 'Меню: prstaweb'
- info "Журнал: $LOG"
- install -m 755 "$0" /usr/local/bin/prstaweb
- install -m 755 "$0" /usr/local/bin/prostoweb
-}
 
 backend_type(){
- if [[ -f /etc/tproxy-server/profiles.json && -f /etc/tproxy-server/config.json ]]; then echo webmtproxy
+ if [[ -f "$BASE/compose.yaml" ]]; then echo containers
+ elif [[ -f /etc/tproxy-server/profiles.json && -f /etc/tproxy-server/config.json ]]; then echo webmtproxy
  elif [[ -f /etc/telemt/telemt.toml ]]; then echo telemt
  else echo none; fi
 }
-ensure_web(){ [[ "$(backend_type)" == webmtproxy ]] || { warn 'Эта команда доступна только для WebMTProxy. Установленный Telemt не изменён.'; return 1; }; }
+ensure_web(){ [[ "$(backend_type)" == webmtproxy || "$(backend_type)" == containers ]] || { warn 'Эта команда доступна только для WebMTProxy. Установленный Telemt не изменён.'; return 1; }; }
 active_domain(){
- if [[ "$(backend_type)" == webmtproxy ]]; then
+ if [[ "$(backend_type)" == containers ]]; then python3 "$APP/lib/config.py" "$BASE" domain
+ elif [[ "$(backend_type)" == webmtproxy ]]; then
   python3 -c 'import json;print(json.load(open("/etc/tproxy-server/config.json")).get("public_hostname","не задан"))' 2>/dev/null || echo неизвестно
  elif [[ "$(backend_type)" == telemt ]]; then sed -n 's/^host = "\([^"]*\)"/\1/p' /etc/telemt/telemt.toml | head -1
  else echo неизвестно; fi
 }
 active_mode(){
- if [[ "$(backend_type)" == webmtproxy ]]; then webmtproxy mode 2>/dev/null || echo неизвестно
+ if [[ "$(backend_type)" == containers ]]; then python3 "$APP/lib/config.py" "$BASE" mode
+ elif [[ "$(backend_type)" == webmtproxy ]]; then webmtproxy mode 2>/dev/null || echo неизвестно
  elif [[ "$(backend_type)" == telemt ]]; then sed -n 's/^carrier = "\([^"]*\)"/\1/p' /etc/telemt/telemt.toml | head -1
  else echo неизвестно; fi
 }
@@ -347,47 +174,29 @@ PYSECRET
 }
 
 show_modes(){
- cat <<'MODES'
-
-╔══════════════════════════════════════════════════════════════════╗
-║               ВЫБОР РЕЖИМА · WEB PROXY                           ║
-╚══════════════════════════════════════════════════════════════════╝
-
- 1) HTTPS — совместимость с iPhone, Android и ПК
-    Обычные HTTPS-запросы. Максимальная совместимость,
-    но при передаче медиа возможны задержки.
-
- 2) HTTPS-Lanes — параллельный HTTPS
-    Для ПК и клиентов с поддержкой lanes. Потоки независимы,
-    полезно при одновременной передаче файлов. Не для iPhone.
-
- 3) WebSocket — постоянное соединение
-    Для клиентов с поддержкой WebSocket. Одно соединение,
-    но высокая скорость не гарантируется. Не для iPhone.
-
- 4) WebSocket-Lanes — независимые WebSocket-потоки
-    Для поддерживающих клиентов. Может помочь с параллельной
-    нагрузкой; поддержка зависит от клиента. Не для iPhone.
-
- Рекомендация: iPhone → 1; ПК/Android → 2 или 4 при поддержке.
-MODES
+ printf '\n  iPhone: https\n  Остальные устройства: https-lanes (нужна поддержка клиентом)\n'
 }
 
 select_menu(){
  local title=$1 outvar=$2; shift 2
- local items=("$@") index=0 key rest n=${#items[@]} i
+ local items=("$@") index=0 key rest delay n=${#items[@]} i
  [[ -t 0 && -t 1 && -r /dev/tty ]] || { warn 'Требуется интерактивный терминал для меню.'; return 1; }
  while :; do
   printf '\033[2J\033[H' > /dev/tty
   printf '%s╔══════════════════════════════════════════════════════╗%s\n' "$cyan" "$clear" > /dev/tty
-  printf '  %s%s%s\n' "$green" "$title" "$clear" > /dev/tty
+  printf '  %sПРОСТОВПН WEB PROXY%s · v%s\n' "$green" "$clear" "$VERSION" > /dev/tty
   printf '%s╚══════════════════════════════════════════════════════╝%s\n\n' "$cyan" "$clear" > /dev/tty
+  dashboard > /dev/tty
+  printf "\n  %s\n\n" "$title" > /dev/tty
   for ((i=0;i<n;i++)); do
    if ((i==index)); then printf '%s  ❯ %s%s\n' "$green" "${items[i]}" "$clear" > /dev/tty
    else printf '    %s\n' "${items[i]}" > /dev/tty; fi
   done
   printf '\n  ↑/↓ — выбор · Enter — открыть · Esc — назад/выход\n' > /dev/tty
-  IFS= read -r -s -n1 key </dev/tty || return 1
+  key=""
+  delay=$((10-$(date +%s)+${DASH_TIME:-0}))
+  ((delay>0)) || delay=1
+  IFS= read -r -s -n1 -t "$delay" key </dev/tty || { [[ -t 0 ]] || return 1; continue; }
   case "$key" in
    '') printf -v "$outvar" '%s' "$index"; return 0 ;;
    $'\033')
@@ -407,14 +216,11 @@ choose_transport(){
  local choices=(
   'HTTPS — iPhone / все платформы · максимальная совместимость'
   'HTTPS-Lanes — ПК / поддерживаемые клиенты · параллельный HTTPS'
-  'WebSocket — поддерживаемые клиенты · одно постоянное соединение'
-  'WebSocket-Lanes — поддерживаемые клиенты · параллельные потоки'
   'Назад'
  )
  select_menu "$title" item "${choices[@]}" || return 1
  case "$item" in
   0) printf -v "$outvar" '%s' 1;; 1) printf -v "$outvar" '%s' 2;;
-  2) printf -v "$outvar" '%s' 3;; 3) printf -v "$outvar" '%s' 4;;
   *) return 1;;
  esac
 }
@@ -470,38 +276,28 @@ menu_transport(){
 # Arrow-key selector: Up/Down, Enter, Esc, and optional j/k.
 # Uses /dev/tty, so it works when stdout is redirected or installation uses curl.
 main_menu(){
- [[ $EUID -eq 0 ]] || die 'Нужен root.'
+ [[ $EUID -eq 0 ]] || die 'Нужен root: sudo zlp'
  local choice
  while :; do
-  select_menu 'ПРОСТО WEB PROXY · Главное меню v8' choice \
-   'Обзор и состояние' 'Подключение, QR, секрет' 'Режим передачи' \
-   'Спонсорский канал' 'Сайт маскировки' 'Управление сервисами' \
-   'Диагностика и сеть' 'Резервная копия' \
-   'Установка нового WebMTProxy' 'Обновить меню на этом сервере' 'Выход' || break
+  select_menu 'Главное меню' choice 'Установка' 'Управление' 'Выход' || break
   case "$choice" in
-   0) menu_details; wait_back;;
-   1) if ensure_web; then menu_access; else warn 'Telemt: текущая ссылка находится в журнале или /root/telegram-webproxy.txt'; wait_back; fi;;
-   2) if ensure_web; then menu_transport; else info "Telemt: $(active_mode); смена режима недоступна в панели WebMTProxy"; wait_back; fi;;
-   3) if ensure_web; then menu_sponsor; else warn 'В Telemt рекламный тег настраивается отдельно; панель его не изменяет'; wait_back; fi;;
-   4) menu_site;;
-   5) menu_services;;
-   6) menu_diag; wait_back;;
-   7) if [[ "$(backend_type)" == webmtproxy ]]; then backup; else info 'Telemt: используйте снимок VPS для полного отката'; fi; wait_back;;
-   8) if [[ "$(backend_type)" != none ]]; then warn 'Прокси уже установлен. Чтобы избежать потери настроек, переустановка запрещена.'; else install_new || true; fi; wait_back;;
-   9) install_menu_only; wait_back;;
-   10) break;;
+   0) install_new || warn 'Установка не завершена'; wait_back;;
+   1) menu_management;;
+   2) break;;
   esac
  done
- printf '\n[✓] Выход из ПРОСТО WEB PROXY\n'
+ printf '\n[✓] Выход из ПРОСТОВПН WEB PROXY\n'
 }
-# Explicit install/update, never changes the running proxy or Caddy.
-case "${1:-}" in
- --install-menu|--update-menu) install_menu_only; exit 0;;
- --status) menu_details; exit 0;;
- --site-status) site_summary; exit 0;;
-esac
-# If executed from a downloaded file, install launcher. Does not restart services.
-if [[ $EUID -eq 0 && "$(backend_type)" != none && "$(readlink -f "$0")" != /usr/local/bin/prstaweb ]]; then
- install_menu_only
+APP=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$APP/lib/core.sh"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+ case "${1:-}" in
+  обновить|update|--update) update_project;;
+  --install) install_new;;
+  --install-menu|--update-menu) register_commands;;
+  --status) dashboard;;
+  --version) printf '%s\n' "$VERSION";;
+  '') register_commands; main_menu;;
+  *) die 'Команды: zlp | zlp обновить | zlp --install | zlp --status | zlp --version';;
+ esac
 fi
-main_menu
