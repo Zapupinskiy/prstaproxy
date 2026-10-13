@@ -45,6 +45,8 @@ main_menu(){ exec bash "$ZLP_APP/prstaproxy.sh" --selfsteal; }
 install_command(){ exec bash "$ZLP_APP/prstaproxy.sh" --install; }
 update_command(){ exec bash "$ZLP_APP/prstaproxy.sh" обновить; }
 check_for_updates_silent(){ :; }
+# Native screens stay inside the result block drawn by the parent menu.
+clear(){ :; }
 install_management_script(){ bash "$ZLP_APP/prstaproxy.sh" --install-menu; }
 maybe_restart_webserver(){
  # Caddy's file_server sees template changes immediately; no relay restart needed.

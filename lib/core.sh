@@ -319,6 +319,7 @@ install_new(){
  local selected start=$SECONDS
  printf '[3/7] Выбор режима\n'
  select_menu 'Установка · выбор режима' selected 'iPhone — https' 'Остальные устройства — https-lanes' || return 1
+ result_begin
  case "$selected" in 0) MODE=https;; 1) MODE=https-lanes;; esac
  printf '  ✓ Режим %s · %s с\n' "$MODE" "$((SECONDS-start))"
  stage 4 'Нативная установка SelfSteal, сайт и конфигурация' write_deployment || return 1
@@ -343,13 +344,7 @@ webmtproxy(){
   *) warn 'Эта операция недоступна для контейнерной установки'; return 1;;
  esac
 }
-status_color(){
- case "$1" in
-  *unhealthy*|*недоступен*) printf '%s' "$red";;
-  running*|active|healthy) printf '%s' "$green";;
-  *) printf '%s' "$red";;
- esac
-}
+
 dashboard_line(){
  local chunk
  printf -v chunk "$@"
@@ -374,23 +369,34 @@ dashboard(){
   fi
   PREV_UP=$up; PREV_DOWN=$down; PREV_TIME=$now
  else PREV_TIME=; fi
- dashboard_line '  %sПрокси%s %s · %sРежим%s %s%s%s\n' "$cyan" "$clear" "$type" "$cyan" "$clear" "$green" "$mode" "$clear"
- dashboard_line '  %sПодключения%s %s%s%s · %sПриём%s %s · %sОтдача%s %s\n' "$cyan" "$clear" "$green" "${users:-—}" "$clear" "$cyan" "$clear" "$rx" "$cyan" "$clear" "$tx"
+ local problem problems=() units=()
  if [[ "$type" == containers ]]; then
+  state=$(systemctl is-active docker 2>/dev/null || true)
+  [[ "$state" == active ]] || problems+=("Docker — ${state:-недоступен}")
   for unit in caddy relay mtproxy; do
    local container="prostoweb-$unit-1"
    [[ "$unit" != caddy || ! -f "$BASE/.selfsteal" ]] || container=caddy-selfsteal
    state=$(timeout 2 docker inspect -f '{{.State.Status}}{{if .State.Health}} / {{.State.Health.Status}}{{end}}' "$container" 2>/dev/null || echo недоступен)
-   dashboard_line '  %s%-7s%s %s%s%s\n' "$cyan" "$unit" "$clear" "$(status_color "$state")" "$state" "$clear"
+   case "$state" in running|'running / healthy') ;; *) problems+=("$unit — $state");; esac
   done
-  state=$(systemctl is-active docker 2>/dev/null || true)
-  dashboard_line '  %sDocker%s  %s%s%s\n' "$cyan" "$clear" "$(status_color "$state")" "${state:-недоступен}" "$clear"
+  [[ -n "$metrics" ]] || problems+=("WEB-релей — метрики недоступны")
  elif [[ "$type" != none ]]; then
-  for unit in nginx mtproxy tproxy-server telemt; do
+  if [[ "$type" == webmtproxy ]]; then units=(nginx mtproxy tproxy-server tproxy-firewall)
+  else units=(nginx telemt); fi
+  for unit in "${units[@]}"; do
    state=$(systemctl is-active "$unit" 2>/dev/null || true)
-   dashboard_line '  %s%-13s%s %s%s%s\n' "$cyan" "$unit" "$clear" "$(status_color "$state")" "${state:-недоступен}" "$clear"
+   [[ "$state" == active ]] || problems+=("$unit — ${state:-недоступен}")
   done
- else dashboard_line '  %sПрокси ещё не установлен%s\n' "$red" "$clear"; fi
+ else problems+=('Прокси не установлен'); fi
+ dashboard_line '  %sРежим%s %s%s%s\n\n' "$cyan" "$clear" "$green" "$mode" "$clear"
+ if ((${#problems[@]}==0)); then
+  dashboard_line '  %sСтатус%s %sОК%s\n' "$cyan" "$clear" "$green" "$clear"
+ else
+  dashboard_line '  %sСтатус%s %sНЕ ОК%s\n' "$cyan" "$clear" "$red" "$clear"
+  for problem in "${problems[@]}"; do dashboard_line '    %s%s%s\n' "$red" "$problem" "$clear"; done
+ fi
+ dashboard_line '\n  %sПодключения%s %s%s%s\n' "$cyan" "$clear" "$green" "${users:-—}" "$clear"
+ dashboard_line '  %sПриём%s %s · %sОтдача%s %s\n\n' "$cyan" "$clear" "$rx" "$cyan" "$clear" "$tx"
  if [[ "$type" == containers || "$type" == webmtproxy ]]; then
   dashboard_line '  %sСсылка%s %s%s%s\n' "$cyan" "$clear" "$green" "$(webmtproxy link 2>/dev/null || echo недоступно)" "$clear"
   dashboard_line '  %sСайт%s   %shttps://%s/%s\n' "$cyan" "$clear" "$green" "$domain" "$clear"
@@ -400,19 +406,20 @@ dashboard(){
 menu_management(){
  local choice
  while :; do
-  select_menu 'Управление' choice 'Режим передачи' 'Управление сервисами' 'Сайт SelfSteal и TLS' 'Обновить' 'Назад' || return 0
+  select_menu 'Управление' choice 'Режим передачи' 'Спонсорский канал' 'Управление сервисами' 'Сайт SelfSteal и TLS' 'Обновить' 'Назад' || return 0
   case "$choice" in
-   0) ensure_web && menu_transport;;
-   1) if [[ "$(backend_type)" == containers ]]; then menu_containers; else menu_services; fi;;
-   2) menu_selfsteal;;
-   3) update_project || warn 'Обновление не завершено'; wait_back;;
-   4) return 0;;
+   0) if ensure_web >/dev/null; then menu_transport; else result_begin; warn 'Режим передачи недоступен'; wait_back; fi;;
+   1) if ensure_web >/dev/null; then menu_sponsor; else result_begin; warn 'Спонсорский канал недоступен'; wait_back; fi;;
+   2) if [[ "$(backend_type)" == containers ]]; then menu_containers; else menu_services; fi;;
+   3) menu_selfsteal;;
+   4) result_begin; update_project || warn 'Обновление не завершено'; wait_back;;
+   5) return 0;;
   esac
  done
 }
 menu_selfsteal(){
  local choice action
- [[ -f "$BASE/.selfsteal" ]] || { warn 'SelfSteal ещё не объединён с этой установкой'; wait_back; return 0; }
+ [[ -f "$BASE/.selfsteal" ]] || { result_begin; warn 'SelfSteal ещё не объединён с этой установкой'; wait_back; return 0; }
  while :; do
   select_menu 'Сайт SelfSteal и TLS' choice 'Выбрать шаблон сайта' 'Состояние и сертификат' 'Обновить сертификат' 'Перевыпустить сертификат' 'Редактировать конфигурацию' 'Размер журналов' 'Очистить журналы' 'Инструкция SelfSteal' 'Назад' || return 0
   case "$choice" in
@@ -420,6 +427,7 @@ menu_selfsteal(){
    3) action=reissue-cert;; 4) action=edit;; 5) action=logs-size;;
    6) action=clean-logs;; 7) action=guide;; 8) return 0;;
   esac
+  result_begin
   BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" "$action" || warn 'Команда SelfSteal не завершена'
   wait_back
  done
@@ -428,6 +436,8 @@ menu_containers(){
  local choice
  while :; do
   select_menu 'Управление сервисами' choice 'Состояние' 'Перезапустить все контейнеры' 'Запустить' 'Остановить' 'Журнал' 'Назад' || return 0
+  [[ "$choice" != 5 ]] || return 0
+  result_begin
   case "$choice" in
    0) compose ps;; 1) compose up -d --force-recreate;; 2) compose up -d;;
    3) compose stop;; 4) compose logs --tail 60;; 5) return 0;;
@@ -472,6 +482,7 @@ update_project(){
  if [[ "$(backend_type)" != containers && "$(backend_type)" != none ]]; then
   info 'Установка прежней версии: обновлены панель и команды. Перенос systemd в Docker требует отдельной миграции.'
  fi
+ if [[ "${RESULT_OPEN:-0}" == 1 ]]; then wait_back; fi
  exec bash "$release/prstaproxy.sh"
 }
 validate_release(){

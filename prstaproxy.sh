@@ -87,6 +87,8 @@ menu_site(){
    'Текущий сайт: заголовок, каталог, источник, HTTPS' \
    'Использовать сайт SelfSteal' 'Установить из каталога' \
    'Проверка HTML и ресурсов' 'Предыдущие резервные копии' 'Назад' || return 0
+  [[ "$choice" != 5 ]] || return 0
+  result_begin
   case "$choice" in
    0) site_summary;;
    1) if yesno 'Скопировать сайт из /opt/caddy/html? Текущая WEB-сессия может прерваться'; then publish_site /opt/caddy/html || true; fi;;
@@ -119,6 +121,8 @@ menu_details(){
 menu_services(){
  local choice unit; while :; do
   select_menu 'ПРОСТО WEB PROXY · Сервисы' choice 'Состояние сервисов' 'Перезапуск WEB-релея' 'Перезапуск backend MTProxy' 'Перезагрузка Nginx' 'Назад' || return 0
+  [[ "$choice" != 4 ]] || return 0
+  result_begin
   case "$choice" in
    0) menu_details;;
    1) if [[ "$(backend_type)" == telemt ]]; then unit=telemt; else unit=tproxy-server; fi
@@ -186,18 +190,19 @@ select_menu(){
  local title=$1 outvar=$2; shift 2
  local items=("$@") index=0 key rest n=${#items[@]} i
  [[ -t 0 && -t 1 && -r /dev/tty ]] || { warn 'Требуется интерактивный терминал для меню.'; return 1; }
+ RESULT_OPEN=0
  dashboard >/dev/null
  while :; do
   printf '\033[2J\033[H' > /dev/tty
   menu_header > /dev/tty
   printf '%s' "$DASH_TEXT" > /dev/tty
+  ui_separator > /dev/tty
   printf "\n  %s\n\n" "$title" > /dev/tty
   for ((i=0;i<n;i++)); do
    if ((i==index)); then printf '%s  ❯ %s%s\n' "$green" "${items[i]}" "$clear" > /dev/tty
    else printf '    %s\n' "${items[i]}" > /dev/tty; fi
-   if ((i<n-1)); then printf "    %s%s%s\n" "$red" "────────────────────────" "$clear" > /dev/tty; fi
   done
-  printf '\n  ↑/↓ — выбор · Enter — открыть · Esc — назад/выход\n' > /dev/tty
+  printf '\n' > /dev/tty
   key=""
   IFS= read -r -s -n1 key </dev/tty || return 1
   case "$key" in
@@ -213,7 +218,19 @@ select_menu(){
   esac
  done
 }
-wait_back(){ printf '\nНажми Enter для возврата...' >/dev/tty; read -r _ </dev/tty || true; }
+ui_separator(){ printf '\n%s──────────────────────────────────────────────────────%s\n' "$red" "$clear"; }
+result_begin(){
+ printf '\033[2J\033[H'
+ menu_header
+ printf '%s' "${DASH_TEXT:-}"
+ ui_separator
+ printf '\n'
+ RESULT_OPEN=1
+}
+result_end(){
+ if [[ "${RESULT_OPEN:-0}" == 1 ]]; then ui_separator; RESULT_OPEN=0; fi
+}
+wait_back(){ result_end; printf '\nНажми Enter для возврата...' >/dev/tty; read -r _ </dev/tty || true; }
 choose_transport(){
  local outvar=$1 title=$2 item
  local choices=(
@@ -233,6 +250,8 @@ menu_access(){
  while :; do
   select_menu 'ПРОСТО WEB PROXY · Доступ' choice \
    'Показать ссылку' 'Показать QR-код' 'Показать действующий секрет' 'Сменить секрет' 'Назад' || return 0
+  [[ "$choice" != 4 ]] || return 0
+  result_begin
   case "$choice" in
    0) webmtproxy link || true;;
    1) if command -v qrencode >/dev/null; then webmtproxy qr || true; else warn 'QR недоступен: установи qrencode'; fi;;
@@ -244,14 +263,37 @@ menu_access(){
  done
 }
 
+menu_sponsor(){
+ local choice tag
+ while :; do
+  select_menu 'Спонсорский канал' choice 'Показать установленный тег' 'Установить тег от @MTProxybot' 'Отключить тег' 'Назад' || return 0
+  [[ "$choice" != 3 ]] || return 0
+  result_begin
+  case "$choice" in
+   0) webmtproxy sponsor || warn 'Не удалось получить тег';;
+   1) ask tag 'Тег от @MTProxybot (32 hex)' ''
+      if [[ "$tag" =~ ^[0-9a-fA-F]{32}$ ]]; then
+       webmtproxy sponsor "$tag" && ok 'Спонсорский тег установлен' || warn 'Не удалось установить тег'
+      elif [[ -n "$tag" ]]; then warn 'Тег должен содержать 32 hex символа'; fi;;
+   2) if yesno 'Отключить спонсорский тег?'; then
+       webmtproxy sponsor off && ok 'Спонсорский тег отключён' || warn 'Не удалось отключить тег'
+      fi;;
+  esac
+  wait_back
+ done
+}
+
 menu_transport(){
  local choice mode
  while :; do
   select_menu 'ПРОСТО WEB PROXY · Транспорт' choice \
    'Показать текущий режим' 'Изменить режим (iPhone / быстрый)' 'Подсказка по режимам' 'Назад' || return 0
+  [[ "$choice" != 3 ]] || return 0
+  result_begin
   case "$choice" in
    0) webmtproxy mode || true;;
    1) if choose_transport mode 'Выбери новый WEB-транспорт'; then
+        result_begin
         case "$mode" in 1) mode=https;; 2) mode=https-lanes;; 3) mode=websocket;; 4) mode=websocket-lanes;; esac
         if webmtproxy mode "$mode"; then ok 'Режим применён. Переподключи клиент.'; else warn 'Не удалось изменить режим'; fi
       fi;;
@@ -268,14 +310,17 @@ main_menu(){
  [[ $EUID -eq 0 ]] || die 'Нужен root: sudo zlp'
  local choice
  while :; do
-  select_menu 'Главное меню' choice 'Установка' 'Управление' 'Выход' || break
+  select_menu 'Главное меню' choice 'Установка' 'Управление' 'Обновить' 'Выход' || break
   case "$choice" in
-   0) install_new || warn 'Установка не завершена'; wait_back;;
+   0) result_begin; install_new || warn 'Установка не завершена'; wait_back;;
    1) menu_management;;
-   2) break;;
+   2) continue;;
+   3) break;;
   esac
  done
- printf '\n[✓] Выход из ПРОСТОВПН WEB PROXY\n'
+ result_begin
+ ok 'Выход из ПРОСТОВПН WEB PROXY'
+ result_end
 }
 APP=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$APP/lib/core.sh"
