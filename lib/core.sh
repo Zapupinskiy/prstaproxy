@@ -345,6 +345,15 @@ webmtproxy(){
  esac
 }
 
+format_speed(){
+ LC_NUMERIC=C awk -v bytes="$1" -v seconds="$2" 'BEGIN {
+  if (seconds <= 0 || bytes < 0) { printf "—"; exit }
+  rate = bytes / seconds
+  if (rate >= 125000000) printf "%.1f Гбит/с", rate * 8 / 1000000000
+  else if (rate >= 1000000) printf "%.1f МБ/с", rate / 1000000
+  else printf "%.1f Кбит/с", rate * 8 / 1000
+ }'
+}
 dashboard_line(){
  local chunk
  printf -v chunk "$@"
@@ -364,8 +373,8 @@ dashboard(){
  now=$(date +%s)
  if [[ "$up" =~ ^[0-9]+$ && "$down" =~ ^[0-9]+$ ]]; then
   if [[ -n "$PREV_TIME" ]] && ((now>PREV_TIME && up>=PREV_UP && down>=PREV_DOWN)); then
-   rx=$(awk -v n="$((up-PREV_UP))" -v t="$((now-PREV_TIME))" 'BEGIN{printf "%.1f КиБ/с",n/t/1024}')
-   tx=$(awk -v n="$((down-PREV_DOWN))" -v t="$((now-PREV_TIME))" 'BEGIN{printf "%.1f КиБ/с",n/t/1024}')
+   rx=$(format_speed "$((up-PREV_UP))" "$((now-PREV_TIME))")
+   tx=$(format_speed "$((down-PREV_DOWN))" "$((now-PREV_TIME))")
   fi
   PREV_UP=$up; PREV_DOWN=$down; PREV_TIME=$now
  else PREV_TIME=; fi
