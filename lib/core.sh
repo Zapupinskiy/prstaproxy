@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 VERSION=$(cat "$APP/VERSION")
 REPO=https://github.com/Zapupinskiy/prstaproxy.git
+SELFSTEAL_DIR=${SELFSTEAL_DIR:-/opt/caddy}
 PREV_UP= PREV_DOWN= PREV_TIME=
 compose(){ docker compose --project-name prostoweb --project-directory "$BASE" -f "$BASE/compose.yaml" "$@"; }
 require_root(){ [[ $EUID -eq 0 ]] || die 'Нужен root: sudo zlp'; }
@@ -14,13 +15,20 @@ exec bash "$APP/prstaproxy.sh" "\$@"
 EOF
   chmod 755 "/usr/local/bin/$name"
  done
+ if [[ -f "$BASE/.selfsteal" ]]; then
+  cat > /usr/local/bin/selfsteal <<EOF
+#!/usr/bin/env bash
+exec bash "$APP/lib/selfsteal.sh" "\$@"
+EOF
+  chmod 755 /usr/local/bin/selfsteal
+ fi
 }
 # A failed stage is waited on explicitly; background jobs cannot kill the menu.
 stage(){
  local number=$1 title=$2; shift 2
  local start=$SECONDS pid rc=0 frame=0 frames='|/-\'
  printf '[%s/7] %s\n' "$number" "$title"
- APP="$APP" BASE="$BASE" LOG="$LOG" DOMAIN="$DOMAIN" MODE="$MODE" \
+ APP="$APP" BASE="$BASE" LOG="$LOG" DOMAIN="$DOMAIN" MODE="$MODE" SELFSTEAL_DIR="$SELFSTEAL_DIR" \
   bash -c 'source "$APP/prstaproxy.sh"; "$@"' _ "$@" >> "$LOG" 2>&1 & pid=$!
  while kill -0 "$pid" 2>/dev/null; do
   printf '\r  %s %s · %02d:%02d' "${frames:frame%4:1}" "$title" "$(((SECONDS-start)/60))" "$(((SECONDS-start)%60))"
@@ -33,7 +41,7 @@ stage(){
 dependencies(){
  export DEBIAN_FRONTEND=noninteractive
  apt-get update
- apt-get install -y --no-install-recommends curl git ca-certificates python3 openssl iproute2 dnsutils qrencode
+ apt-get install -y --no-install-recommends curl git ca-certificates python3 openssl iproute2 dnsutils qrencode nano jq
  if ! command -v docker >/dev/null; then apt-get install -y docker.io; fi
  if ! docker compose version >/dev/null 2>&1; then
   if apt-cache show docker-compose-v2 >/dev/null 2>&1; then apt-get install -y docker-compose-v2
@@ -67,31 +75,149 @@ check_dns(){
 }
 write_deployment(){
  python3 "$APP/lib/config.py" "$BASE" init "$DOMAIN" "$MODE" "$(cat "$BASE/public-ip")"
- mkdir -p "$BASE/site"
- printf '<!doctype html><html lang="ru"><meta charset="utf-8"><title>%s</title><h1>%s</h1><p>Сайт работает.</p></html>\n' "$DOMAIN" "$DOMAIN" > "$BASE/site/index.html"
- printf '<!doctype html><title>404</title><h1>Страница не найдена</h1>\n' > "$BASE/site/404.html"
- cat > "$BASE/Caddyfile" <<EOF
-{
- admin off
- servers {
-  protocols h1 h2
-  timeouts {
-   read_header 10s
-   read_body 60s
-  }
- }
-}
-$DOMAIN {
- reverse_proxy 127.0.0.1:8080 {
-  transport http {
-   response_header_timeout 40s
-  }
- }
-}
-EOF
+ prepare_selfsteal
  write_compose
 }
+prepare_selfsteal(){
+ local domain
+ domain=$(python3 "$APP/lib/config.py" "$BASE" domain)
+ if [[ -f "$SELFSTEAL_DIR/docker-compose.yml" && ! -f "$BASE/.selfsteal" ]]; then
+  echo 'Обнаружена отдельная установка SelfSteal. Она не будет перезаписана; требуется перенос её Compose в общий проект.'
+  return 1
+ fi
+ if [[ -f /opt/nginx-selfsteal/docker-compose.yml ]]; then
+  echo 'Обнаружен SelfSteal Nginx. Общая установка требует Caddy; автоматическая замена Nginx отключена.'; return 1
+ fi
+ if [[ -f "$SELFSTEAL_DIR/.env" ]]; then
+  grep -Fxq "SELF_STEAL_DOMAIN=$domain" "$SELFSTEAL_DIR/.env" || { echo 'У существующего SelfSteal другой домен'; return 1; }
+  grep -Fxq 'SELF_STEAL_PORT=9443' "$SELFSTEAL_DIR/.env" || { echo 'Существующий SelfSteal должен использовать порт 9443'; return 1; }
+ fi
+ # Preserve an operator site while migrating an existing 0.2/0.3 installation.
+ if [[ ! -s "$SELFSTEAL_DIR/html/index.html" && -s "$BASE/site/index.html" ]]; then
+  mkdir -p "$SELFSTEAL_DIR/html"
+  cp -a "$BASE/site/." "$SELFSTEAL_DIR/html/"
+ fi
+ BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" --zlp-prepare "$domain"
+ python3 "$APP/lib/selfsteal_config.py" "$BASE" "$SELFSTEAL_DIR"
+}
+snapshot_deployment(){
+ local destination=$1 file
+ mkdir -m 700 "$destination"
+ cp -a "$BASE/config" "$BASE/compose.yaml" "$destination/"
+ for file in Caddyfile .selfsteal .installed; do
+  [[ ! -e "$BASE/$file" ]] || cp -a "$BASE/$file" "$destination/"
+ done
+ if [[ -d "$SELFSTEAL_DIR" ]]; then cp -a "$SELFSTEAL_DIR" "$destination/selfsteal"; fi
+}
+restore_deployment(){
+ local destination=$1
+ cp -a "$destination/config/." "$BASE/config/"
+ cp "$destination/compose.yaml" "$BASE/compose.yaml"
+ if [[ -f "$destination/.selfsteal" ]]; then cp "$destination/.selfsteal" "$BASE/.selfsteal"
+ else rm -f "$BASE/.selfsteal"; fi
+ [[ ! -f "$destination/Caddyfile" ]] || cp "$destination/Caddyfile" "$BASE/Caddyfile"
+ if [[ -d "$destination/selfsteal" ]]; then cp -a "$destination/selfsteal/." "$SELFSTEAL_DIR/"
+ else
+  # Only remove the generated bridge/config; downloaded operator content is kept.
+  rm -f "$SELFSTEAL_DIR/Caddyfile" "$SELFSTEAL_DIR/zlp.Caddyfile" "$SELFSTEAL_DIR/.env" "$SELFSTEAL_DIR/docker-compose.yml"
+ fi
+}
+integrate_existing(){
+ require_root
+ local destination="$BASE/backups/selfsteal-$(date +%Y%m%d-%H%M%S)-$$" rc=0
+ touch "$LOG"; chmod 600 "$LOG"
+ stage 1 'Общие зависимости установщика и SelfSteal' dependencies || return 1
+ mkdir -p "$BASE/backups"
+ snapshot_deployment "$destination" || return 1
+ info 'Объединяю существующий WEB Proxy с SelfSteal. Домен, секрет и сайт сохраняются.'
+ if stage 4 'Нативная установка SelfSteal и общий сайт' resume_deployment &&
+    stage 6 'Проверка Caddy и запуск общих контейнеров' start_deployment --force-recreate &&
+    stage 7 'Проверка WEB Proxy и SelfSteal' verify_deployment; then
+  register_commands
+  DASH_TIME=0
+  ok "SelfSteal интегрирован. Резервная копия: $destination"
+  return 0
+ fi
+ restore_deployment "$destination" || rc=1
+ compose up -d --force-recreate || rc=1
+ warn "Интеграция не прошла проверку; восстановлена прежняя конфигурация (ошибка отката: $rc)."
+ return 1
+}
+resume_deployment(){
+ prepare_selfsteal
+ write_compose
+}
+build_deployment(){
+ compose build --pull || return 1
+ if [[ -f "$BASE/.selfsteal" ]]; then BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" --zlp-image; fi
+}
+start_deployment(){
+ if [[ -f "$BASE/.selfsteal" ]]; then
+  BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" --zlp-validate || return 1
+ fi
+ compose up -d "$@"
+}
+
+write_selfsteal_compose(){
+ cat > "$BASE/compose.yaml" <<EOF
+name: prostoweb
+services:
+  mtproxy:
+    image: prostoweb-mtproxy:local
+    build:
+      context: $APP/docker
+      dockerfile: mtproxy.Dockerfile
+    restart: unless-stopped
+    volumes:
+      - $BASE/config:/config:ro
+      - mtproxy-data:/data
+    networks: [backend]
+    ports: ['80:80', '443:443', '127.0.0.1:9443:9443']
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+  relay:
+    image: prostoweb-relay:local
+    build:
+      context: $APP/docker
+      dockerfile: relay.Dockerfile
+    restart: unless-stopped
+    depends_on: [mtproxy]
+    volumes:
+      - $BASE/config:/etc/tproxy-server:ro
+    network_mode: service:mtproxy
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:8081/readyz]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+  caddy:
+    image: caddy:2.11.4
+    container_name: caddy-selfsteal
+    restart: unless-stopped
+    depends_on: [relay]
+    env_file: [$SELFSTEAL_DIR/.env]
+    volumes:
+      - $SELFSTEAL_DIR/Caddyfile:/etc/caddy/Caddyfile:ro
+      - $SELFSTEAL_DIR/zlp.Caddyfile:/etc/caddy/zlp.Caddyfile:ro
+      - $SELFSTEAL_DIR/html:/var/www/html:ro
+      - $SELFSTEAL_DIR/logs:/var/log/caddy
+      - caddy-data:/data
+      - caddy-config:/config
+    network_mode: service:mtproxy
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+networks:
+  backend:
+volumes:
+  mtproxy-data:
+  caddy-data:
+  caddy-config:
+EOF
+ compose config --quiet
+ # Native SelfSteal commands operate the same project from their original path.
+ ln -sfn "$BASE/compose.yaml" "$SELFSTEAL_DIR/docker-compose.yml"
+}
 write_compose(){
+ if [[ -f "$BASE/.selfsteal" ]]; then write_selfsteal_compose; return; fi
  cat > "$BASE/compose.yaml" <<EOF
 services:
   mtproxy:
@@ -147,7 +273,9 @@ verify_deployment(){
  domain=$(active_domain)
  for ((attempt=0;attempt<90;attempt++)); do
   if compose exec -T relay curl -fsS --max-time 2 http://127.0.0.1:8081/readyz >/dev/null &&
-     curl -fsS --max-time 3 --resolve "$domain:443:127.0.0.1" "https://$domain/" >/dev/null; then return 0; fi
+     curl -fsS --max-time 3 --resolve "$domain:443:127.0.0.1" "https://$domain/" >/dev/null; then
+   if [[ ! -f "$BASE/.selfsteal" ]] || compose exec -T relay curl -fsS --max-time 2 http://127.0.0.1:18083/ >/dev/null; then return 0; fi
+  fi
   sleep 2
  done
  echo 'Не прошла проверка relay/TLS. Проверьте DNS, доступность 80/443 и docker compose logs.'
@@ -161,9 +289,9 @@ install_new(){
  if [[ "$(backend_type)" == containers && ! -f "$BASE/.installed" ]]; then
   info 'Продолжаю незавершённую установку, сохраняя домен и секрет.'
   touch "$LOG"; chmod 600 "$LOG"
-  stage 4 'Проверка сохранённой конфигурации' write_compose || return 1
-  stage 5 'Сборка MTProxy и WEB-релея' compose build --pull || return 1
-  stage 6 'Запуск контейнеров и получение TLS' compose up -d || return 1
+ stage 4 'SelfSteal и сохранённая конфигурация' resume_deployment || return 1
+  stage 5 'Сборка backend и образ SelfSteal' build_deployment || return 1
+  stage 6 'Проверка Caddy, запуск контейнеров и TLS' start_deployment || return 1
   stage 7 'Проверка готовности и HTTPS' verify_deployment || return 1
   touch "$BASE/.installed"
   register_commands
@@ -171,12 +299,13 @@ install_new(){
   webmtproxy link
   return 0
  fi
+ if [[ "$(backend_type)" == containers && ! -f "$BASE/.selfsteal" ]]; then integrate_existing; return; fi
  if [[ "$(backend_type)" != none ]]; then warn 'Прокси уже установлен. Используй zlp обновить; настройки сохраняются.'; return 0; fi
  mkdir -p "$BASE"; chmod 700 "$BASE"
  touch "$LOG"; chmod 600 "$LOG"
  stage 1 'Зависимости установщика и Docker Compose' dependencies || return 1
  local port
- for port in 80 443; do
+ for port in 80 443 9443; do
   if port_busy "$port"; then warn "Порт $port занят. Освободи его перед установкой."; return 1; fi
  done
  printf '[2/7] Домен и проверка DNS\n'
@@ -192,9 +321,9 @@ install_new(){
  select_menu 'Установка · выбор режима' selected 'iPhone — https' 'Остальные устройства — https-lanes' || return 1
  case "$selected" in 0) MODE=https;; 1) MODE=https-lanes;; esac
  printf '  ✓ Режим %s · %s с\n' "$MODE" "$((SECONDS-start))"
- stage 4 'Конфигурация контейнеров и секреты' write_deployment || return 1
- stage 5 'Сборка MTProxy и WEB-релея' compose build --pull || return 1
- stage 6 'Запуск контейнеров и получение TLS' compose up -d || return 1
+ stage 4 'Нативная установка SelfSteal, сайт и конфигурация' write_deployment || return 1
+ stage 5 'Сборка backend и образ SelfSteal' build_deployment || return 1
+ stage 6 'Проверка Caddy, запуск SelfSteal и WEB Proxy' start_deployment || return 1
  stage 7 'Проверка готовности и HTTPS' verify_deployment || return 1
  touch "$BASE/.installed"
  register_commands
@@ -245,7 +374,9 @@ dashboard(){
  dashboard_line '  Приём от клиентов: %s · Отдача клиентам: %s\n' "$rx" "$tx"
  if [[ "$type" == containers ]]; then
   for unit in caddy relay mtproxy; do
-   state=$(timeout 2 docker inspect -f '{{.State.Status}}{{if .State.Health}} / {{.State.Health.Status}}{{end}}' "prostoweb-$unit-1" 2>/dev/null || echo недоступен)
+   local container="prostoweb-$unit-1"
+   [[ "$unit" != caddy || ! -f "$BASE/.selfsteal" ]] || container=caddy-selfsteal
+   state=$(timeout 2 docker inspect -f '{{.State.Status}}{{if .State.Health}} / {{.State.Health.Status}}{{end}}' "$container" 2>/dev/null || echo недоступен)
    dashboard_line '  Контейнер %-8s %s\n' "$unit" "$state"
   done
   dashboard_line '  Служба Docker: %s\n' "$(systemctl is-active docker 2>/dev/null || true)"
@@ -257,6 +388,7 @@ dashboard(){
  if [[ "$type" == containers || "$type" == webmtproxy ]]; then
   dashboard_line '  Подключение: %s\n' "$(webmtproxy link 2>/dev/null || echo недоступно)"
   dashboard_line '  Сайт: https://%s/\n' "$domain"
+  [[ ! -f "$BASE/.selfsteal" ]] || dashboard_line '  SelfSteal: https://%s:9443/ (loopback) · команда: selfsteal\n' "$domain"
  fi
  dashboard_line '  Сессии ≠ уникальные люди; скорости — полезный трафик WEB-релея.\n'
  DASH_TIME=$(date +%s)
@@ -265,14 +397,30 @@ dashboard(){
 menu_management(){
  local choice
  while :; do
-  select_menu 'Управление' choice 'Режим передачи' 'Спонсорский канал' 'Управление сервисами' 'Обновить' 'Назад' || return 0
+  select_menu 'Управление' choice 'Режим передачи' 'Спонсорский канал' 'Управление сервисами' 'Сайт SelfSteal и TLS' 'Обновить' 'Назад' || return 0
   case "$choice" in
    0) ensure_web && menu_transport;;
    1) ensure_web && menu_sponsor;;
    2) if [[ "$(backend_type)" == containers ]]; then menu_containers; else menu_services; fi;;
-   3) update_project || warn 'Обновление не завершено'; wait_back;;
-   4) return 0;;
+   3) menu_selfsteal;;
+   4) update_project || warn 'Обновление не завершено'; wait_back;;
+   5) return 0;;
   esac
+ done
+}
+menu_selfsteal(){
+ local choice action
+ [[ -f "$BASE/.selfsteal" ]] || { warn 'SelfSteal ещё не объединён с этой установкой'; wait_back; return 0; }
+ while :; do
+  select_menu 'Сайт SelfSteal и TLS' choice 'Выбрать шаблон сайта' 'Состояние и сертификат' 'Обновить сертификат' 'Перевыпустить сертификат' 'Редактировать конфигурацию' 'Размер журналов' 'Очистить журналы' 'Инструкция SelfSteal' 'Назад' || return 0
+  case "$choice" in
+   0) action=template;; 1) action=status;; 2) action=renew-ssl;;
+   3) action=reissue-cert;; 4) action=edit;; 5) action=logs-size;;
+   6) action=clean-logs;; 7) action=guide;; 8) return 0;;
+  esac
+  BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" "$action" || warn 'Команда SelfSteal не завершена'
+  DASH_TIME=0
+  wait_back
  done
 }
 menu_containers(){
@@ -293,22 +441,22 @@ update_project(){
  mkdir -p "$BASE/app/releases" "$BASE/backups"
  temp=$(mktemp -d "$BASE/app/releases/update.XXXXXX")
  if ! git clone --depth 1 "$REPO" "$temp"; then rm -rf -- "$temp"; return 1; fi
- if ! bash -n "$temp/prstaproxy.sh" "$temp/lib/core.sh" || ! python3 -m py_compile "$temp/lib/config.py"; then
+ if ! validate_release "$temp"; then
   rm -rf -- "$temp"; warn 'Обновление не прошло проверку'; return 1
  fi
  release="$BASE/app/releases/$(git -C "$temp" rev-parse HEAD)"
  if [[ ! -d "$release" ]]; then mv "$temp" "$release"; else rm -rf -- "$temp"; fi
  stamp=$(date +%Y%m%d-%H%M%S)
  if [[ "$(backend_type)" == containers ]]; then
-  mkdir -m 700 "$BASE/backups/$stamp"
-  cp -a "$BASE/config" "$BASE/compose.yaml" "$BASE/Caddyfile" "$BASE/backups/$stamp/"
+  snapshot_deployment "$BASE/backups/$stamp" || return 1
   old_compose="$BASE/backups/$stamp/compose.yaml"
   local image
   for image in relay mtproxy; do docker tag "prostoweb-$image:local" "prostoweb-$image:rollback-$stamp" || return 1; done
   APP=$release
-  if ! write_compose || ! compose build --pull || ! compose up -d --force-recreate || ! verify_deployment; then
+  if ! BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash -c 'source "$1/prstaproxy.sh"; resume_deployment' _ "$release" ||
+     ! build_deployment || ! start_deployment --force-recreate || ! verify_deployment; then
    for image in relay mtproxy; do docker tag "prostoweb-$image:rollback-$stamp" "prostoweb-$image:local"; done
-   cp "$old_compose" "$BASE/compose.yaml"
+   restore_deployment "$BASE/backups/$stamp" || rolled=1
    compose up -d --force-recreate || rolled=1
    APP=$old_app
    warn "Обновление не прошло проверку. Восстановлены предыдущие образы и Compose (ошибка отката: $rolled)."
@@ -324,4 +472,11 @@ update_project(){
   info 'Установка прежней версии: обновлены панель и команды. Перенос systemd в Docker требует отдельной миграции.'
  fi
  exec bash "$release/prstaproxy.sh"
+}
+validate_release(){
+ local directory=$1 file
+ for file in prstaproxy.sh install.sh lib/core.sh lib/selfsteal.sh vendor/selfsteal.sh docker/mtproxy-entrypoint.sh; do
+  bash -n "$directory/$file" || return 1
+ done
+ python3 -m py_compile "$directory/lib/config.py" "$directory/lib/selfsteal_config.py"
 }

@@ -296,8 +296,14 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   --install) install_new;;
   --install-menu|--update-menu) register_commands;;
   --status) dashboard;;
+  --selfsteal) require_root; menu_selfsteal;;
   --version) printf '%s\n' "$VERSION";;
-  '') register_commands; main_menu;;
+  '')
+   require_root
+   if [[ "$(backend_type)" == containers && ! -f "$BASE/.selfsteal" && -f "$BASE/.installed" ]]; then
+    integrate_existing || warn 'SelfSteal не интегрирован. Прежняя конфигурация восстановлена.'
+   fi
+   register_commands; main_menu;;
   *) die 'Команды: zlp | zlp обновить | zlp --install | zlp --status | zlp --version';;
  esac
 fi
