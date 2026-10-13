@@ -43,7 +43,7 @@ dependencies(){
    temporary=$(mktemp -d)
    curl -fsSL --retry 3 https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-x86_64 -o "$temporary/docker-compose"
    curl -fsSL --retry 3 https://github.com/docker/compose/releases/download/v2.39.4/checksums.txt -o "$temporary/checksums.txt"
-   checksum=$(awk '$2=="docker-compose-linux-x86_64" {print $1}' "$temporary/checksums.txt")
+   checksum=$(awk '{sub(/^\*/, "", $2)} $2=="docker-compose-linux-x86_64" {print $1}' "$temporary/checksums.txt")
    [[ "$checksum" =~ ^[0-9a-f]{64}$ ]]
    printf '%s  %s\n' "$checksum" "$temporary/docker-compose" | sha256sum -c -
    install -D -m 755 "$temporary/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose

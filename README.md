@@ -1,4 +1,4 @@
-# ПРОСТОВПН WEB PROXY — 0.2
+# ПРОСТОВПН WEB PROXY — 0.3
 
 Установка на Ubuntu 24.04 / Debian 12–13, x86_64, systemd:
 
