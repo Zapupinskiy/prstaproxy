@@ -177,26 +177,29 @@ show_modes(){
  printf '\n  iPhone: https\n  Остальные устройства: https-lanes (нужна поддержка клиентом)\n'
 }
 
+menu_header(){
+ printf '%s╔═════════════════════╗%s\n' "$cyan" "$clear"
+ printf '%s║%s %sПРОСТОВПН WEB PROXY%s %s║%s\n' "$cyan" "$clear" "$green" "$clear" "$cyan" "$clear"
+ printf '%s╚═════════════════════╝%s\n\n' "$cyan" "$clear"
+}
 select_menu(){
  local title=$1 outvar=$2; shift 2
- local items=("$@") index=0 key rest delay n=${#items[@]} i
+ local items=("$@") index=0 key rest n=${#items[@]} i
  [[ -t 0 && -t 1 && -r /dev/tty ]] || { warn 'Требуется интерактивный терминал для меню.'; return 1; }
+ dashboard >/dev/null
  while :; do
   printf '\033[2J\033[H' > /dev/tty
-  printf '%s╔══════════════════════════════════════════════════════╗%s\n' "$cyan" "$clear" > /dev/tty
-  printf '  %sПРОСТОВПН WEB PROXY%s · v%s\n' "$green" "$clear" "$VERSION" > /dev/tty
-  printf '%s╚══════════════════════════════════════════════════════╝%s\n\n' "$cyan" "$clear" > /dev/tty
-  dashboard > /dev/tty
+  menu_header > /dev/tty
+  printf '%s' "$DASH_TEXT" > /dev/tty
   printf "\n  %s\n\n" "$title" > /dev/tty
   for ((i=0;i<n;i++)); do
    if ((i==index)); then printf '%s  ❯ %s%s\n' "$green" "${items[i]}" "$clear" > /dev/tty
    else printf '    %s\n' "${items[i]}" > /dev/tty; fi
+   if ((i<n-1)); then printf "    %s%s%s\n" "$red" "────────────────────────" "$clear" > /dev/tty; fi
   done
   printf '\n  ↑/↓ — выбор · Enter — открыть · Esc — назад/выход\n' > /dev/tty
   key=""
-  delay=$((10-$(date +%s)+${DASH_TIME:-0}))
-  ((delay>0)) || delay=1
-  IFS= read -r -s -n1 -t "$delay" key </dev/tty || { [[ -t 0 ]] || return 1; continue; }
+  IFS= read -r -s -n1 key </dev/tty || return 1
   case "$key" in
    '') printf -v "$outvar" '%s' "$index"; return 0 ;;
    $'\033')
@@ -240,21 +243,7 @@ menu_access(){
   wait_back
  done
 }
-menu_sponsor(){
- local choice tag
- while :; do
-  select_menu 'ПРОСТО WEB PROXY · Спонсорский канал' choice \
-   'Показать установленный тег' 'Установить тег от @MTProxybot' 'Отключить тег' 'Назад' || return 0
-  case "$choice" in
-   0) webmtproxy sponsor || true;;
-   1) ask tag 'Введи ad_tag (32 hex)' ''; [[ -z "$tag" ]] || webmtproxy sponsor "$tag" || true;;
-   2) if yesno 'Отключить спонсорский тег?'; then webmtproxy sponsor off || true; fi;;
-   3) return 0;;
-  esac
-  warn 'Установка тега не подтверждает фактический показ канала в Telegram WEB.'
-  wait_back
- done
-}
+
 menu_transport(){
  local choice mode
  while :; do

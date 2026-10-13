@@ -134,7 +134,6 @@ integrate_existing(){
     stage 6 'Проверка Caddy и запуск общих контейнеров' start_deployment --force-recreate &&
     stage 7 'Проверка WEB Proxy и SelfSteal' verify_deployment; then
   register_commands
-  DASH_TIME=0
   ok "SelfSteal интегрирован. Резервная копия: $destination"
   return 0
  fi
@@ -283,8 +282,9 @@ verify_deployment(){
 }
 install_new(){
  require_root
- source /etc/os-release
- [[ "$ID" == ubuntu || "$ID" == debian ]] || { warn 'Нужна Ubuntu/Debian с systemd'; return 1; }
+ local os_id
+ os_id=$(source /etc/os-release; printf '%s' "$ID")
+ [[ "$os_id" == ubuntu || "$os_id" == debian ]] || { warn 'Нужна Ubuntu/Debian с systemd'; return 1; }
  [[ $(uname -m) == x86_64 ]] || { warn 'MTProxy требует x86_64'; return 1; }
  if [[ "$(backend_type)" == containers && ! -f "$BASE/.installed" ]]; then
   info 'Продолжаю незавершённую установку, сохраняя домен и секрет.'
@@ -343,13 +343,19 @@ webmtproxy(){
   *) warn 'Эта операция недоступна для контейнерной установки'; return 1;;
  esac
 }
+status_color(){
+ case "$1" in
+  *unhealthy*|*недоступен*) printf '%s' "$red";;
+  running*|active|healthy) printf '%s' "$green";;
+  *) printf '%s' "$red";;
+ esac
+}
 dashboard_line(){
  local chunk
  printf -v chunk "$@"
  DASH_TEXT+=$chunk
 }
 dashboard(){
- if [[ -n "${DASH_TIME:-}" ]] && (($(date +%s)-DASH_TIME<10)); then printf '%s' "$DASH_TEXT"; return; fi
  DASH_TEXT=
  local type domain mode admin metrics users up down now rx='—' tx='—' unit state
  type=$(backend_type); domain=$(active_domain); mode=$(active_mode)
@@ -368,43 +374,39 @@ dashboard(){
   fi
   PREV_UP=$up; PREV_DOWN=$down; PREV_TIME=$now
  else PREV_TIME=; fi
- dashboard_line '  Дашборд · %s · обновление каждые 10 секунд\n' "$(date +%T)"
- dashboard_line '  Активный WEB-прокси: %s · режим: %s\n' "$type" "$mode"
- dashboard_line '  Пользователи (активные сессии): %s\n' "${users:-нет данных}"
- dashboard_line '  Приём от клиентов: %s · Отдача клиентам: %s\n' "$rx" "$tx"
+ dashboard_line '  %sПрокси%s %s · %sРежим%s %s%s%s\n' "$cyan" "$clear" "$type" "$cyan" "$clear" "$green" "$mode" "$clear"
+ dashboard_line '  %sПодключения%s %s%s%s · %sПриём%s %s · %sОтдача%s %s\n' "$cyan" "$clear" "$green" "${users:-—}" "$clear" "$cyan" "$clear" "$rx" "$cyan" "$clear" "$tx"
  if [[ "$type" == containers ]]; then
   for unit in caddy relay mtproxy; do
    local container="prostoweb-$unit-1"
    [[ "$unit" != caddy || ! -f "$BASE/.selfsteal" ]] || container=caddy-selfsteal
    state=$(timeout 2 docker inspect -f '{{.State.Status}}{{if .State.Health}} / {{.State.Health.Status}}{{end}}' "$container" 2>/dev/null || echo недоступен)
-   dashboard_line '  Контейнер %-8s %s\n' "$unit" "$state"
+   dashboard_line '  %s%-7s%s %s%s%s\n' "$cyan" "$unit" "$clear" "$(status_color "$state")" "$state" "$clear"
   done
-  dashboard_line '  Служба Docker: %s\n' "$(systemctl is-active docker 2>/dev/null || true)"
+  state=$(systemctl is-active docker 2>/dev/null || true)
+  dashboard_line '  %sDocker%s  %s%s%s\n' "$cyan" "$clear" "$(status_color "$state")" "${state:-недоступен}" "$clear"
  elif [[ "$type" != none ]]; then
   for unit in nginx mtproxy tproxy-server telemt; do
-   dashboard_line '  Служба %-13s %s\n' "$unit" "$(systemctl is-active "$unit" 2>/dev/null || true)"
+   state=$(systemctl is-active "$unit" 2>/dev/null || true)
+   dashboard_line '  %s%-13s%s %s%s%s\n' "$cyan" "$unit" "$clear" "$(status_color "$state")" "${state:-недоступен}" "$clear"
   done
- else dashboard_line '  Контейнеры и службы прокси ещё не установлены\n'; fi
+ else dashboard_line '  %sПрокси ещё не установлен%s\n' "$red" "$clear"; fi
  if [[ "$type" == containers || "$type" == webmtproxy ]]; then
-  dashboard_line '  Подключение: %s\n' "$(webmtproxy link 2>/dev/null || echo недоступно)"
-  dashboard_line '  Сайт: https://%s/\n' "$domain"
-  [[ ! -f "$BASE/.selfsteal" ]] || dashboard_line '  SelfSteal: https://%s:9443/ (loopback) · команда: selfsteal\n' "$domain"
+  dashboard_line '  %sСсылка%s %s%s%s\n' "$cyan" "$clear" "$green" "$(webmtproxy link 2>/dev/null || echo недоступно)" "$clear"
+  dashboard_line '  %sСайт%s   %shttps://%s/%s\n' "$cyan" "$clear" "$green" "$domain" "$clear"
  fi
- dashboard_line '  Сессии ≠ уникальные люди; скорости — полезный трафик WEB-релея.\n'
- DASH_TIME=$(date +%s)
  printf '%s' "$DASH_TEXT"
 }
 menu_management(){
  local choice
  while :; do
-  select_menu 'Управление' choice 'Режим передачи' 'Спонсорский канал' 'Управление сервисами' 'Сайт SelfSteal и TLS' 'Обновить' 'Назад' || return 0
+  select_menu 'Управление' choice 'Режим передачи' 'Управление сервисами' 'Сайт SelfSteal и TLS' 'Обновить' 'Назад' || return 0
   case "$choice" in
    0) ensure_web && menu_transport;;
-   1) ensure_web && menu_sponsor;;
-   2) if [[ "$(backend_type)" == containers ]]; then menu_containers; else menu_services; fi;;
-   3) menu_selfsteal;;
-   4) update_project || warn 'Обновление не завершено'; wait_back;;
-   5) return 0;;
+   1) if [[ "$(backend_type)" == containers ]]; then menu_containers; else menu_services; fi;;
+   2) menu_selfsteal;;
+   3) update_project || warn 'Обновление не завершено'; wait_back;;
+   4) return 0;;
   esac
  done
 }
@@ -419,7 +421,6 @@ menu_selfsteal(){
    6) action=clean-logs;; 7) action=guide;; 8) return 0;;
   esac
   BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" "$action" || warn 'Команда SelfSteal не завершена'
-  DASH_TIME=0
   wait_back
  done
 }
