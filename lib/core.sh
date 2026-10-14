@@ -331,11 +331,48 @@ install_new(){
  ok "ПРОСТОВПН WEB PROXY $VERSION установлен. Меню: zlp"
  webmtproxy link
 }
+verify_mode(){
+ local attempt domain
+ domain=$(active_domain) || return 1
+ for ((attempt=0;attempt<15;attempt++)); do
+  if compose exec -T relay curl -fsS --max-time 2 http://127.0.0.1:8081/readyz >/dev/null 2>&1 &&
+     compose exec -T mtproxy sh -c 'ss -lntH sport = :2398 | grep -q .' >/dev/null 2>&1 &&
+     curl -fsS --max-time 3 --resolve "$domain:443:127.0.0.1" "https://$domain/" >/dev/null 2>&1; then return 0; fi
+  sleep 2
+ done
+ return 1
+}
+change_mode(){
+ local previous backup
+ previous=$(python3 "$APP/lib/config.py" "$BASE" mode) || return 1
+ backup=$(mktemp "$BASE/config/profiles.rollback.XXXXXX") || return 1
+ if ! cp "$BASE/config/profiles.json" "$backup"; then rm -f "$backup"; return 1; fi
+ if ! python3 "$APP/lib/config.py" "$BASE" mode "$1"; then rm -f "$backup"; return 1; fi
+ info 'Проверка запуска прокси после смены режима…'
+ if compose restart relay && verify_mode; then
+  rm -f "$backup"
+  return 0
+ fi
+ warn "Прокси не прошёл проверку запуска. Возвращаю предыдущий режим: $previous"
+ compose logs --tail 20 relay >&2 || true
+ if ! mv -f "$backup" "$BASE/config/profiles.json"; then
+  warn "Не удалось восстановить конфигурацию. Резервная копия: $backup"
+  return 1
+ fi
+ if compose restart relay && verify_mode; then
+  warn "Предыдущий режим $previous восстановлен, прокси работает. Смена отменена."
+ else
+  warn "Настройки режима $previous восстановлены, но прокси не прошёл повторную проверку. Проверь состояние сервисов и журналы."
+ fi
+ return 1
+}
 webmtproxy(){
  if [[ "$(backend_type)" != containers ]]; then command webmtproxy "$@"; return; fi
  local action=${1:-link}; shift || true
  case "$action" in
-  link|mode|sponsor|secret|secret-raw|rotate-secret)
+  mode)
+   if (($#)); then change_mode "$1"; else python3 "$APP/lib/config.py" "$BASE" mode; fi;;
+  link|sponsor|secret|secret-raw|rotate-secret)
    python3 "$APP/lib/config.py" "$BASE" "$action" "$@" || return 1
    if (($#)) || [[ "$action" == rotate-secret ]]; then
     if [[ "$action" == sponsor || "$action" == secret || "$action" == rotate-secret ]]; then compose up -d --force-recreate; else compose restart relay; fi

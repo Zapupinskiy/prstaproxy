@@ -51,6 +51,7 @@ class ConfigurationTests(unittest.TestCase):
 backend_type(){ echo containers; }
 python3(){ "$TEST_PYTHON" "$@"; }
 compose(){ printf '%s\n' "$*" >> "$TEST_CALLS"; }
+verify_mode(){ return 0; }
 webmtproxy mode "$TEST_MODE"
 '''
         calls = self.base / 'calls'
@@ -73,6 +74,41 @@ webmtproxy mode "$TEST_MODE"
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls.read_bytes(), before)
         self.assertEqual(self.run_config('mode'), 'https')
+
+    def test_failed_mode_change_restores_exact_configuration(self):
+        root = SCRIPT.parent.parent
+        bash = shutil.which('bash') or 'C:/Program Files/Git/bin/bash.exe'
+        mock = r'''source "$1/prstaproxy.sh"
+backend_type(){ echo containers; }
+python3(){ "$TEST_PYTHON" "$@"; }
+compose(){
+ if [[ "$1" == restart ]]; then
+  count=$((count+1))
+  [[ "$TEST_FAILURE" != restart || "$count" != 1 ]]
+ fi
+}
+verify_mode(){
+ [[ "$TEST_FAILURE" != both && "$(python3 "$APP/lib/config.py" "$BASE" mode)" == https ]]
+}
+count=0
+webmtproxy mode https-lanes
+'''
+        before = (self.base / 'config/profiles.json').read_bytes()
+        link = self.run_config('link')
+        for failure in ('ready', 'restart', 'both'):
+            result = subprocess.run([bash, '-c', mock, '_', root.as_posix()],
+                env={**os.environ, 'BASE': self.base.as_posix(),
+                     'TEST_PYTHON': Path(sys.executable).as_posix(),
+                     'TEST_FAILURE': failure, 'PYTHONUTF8': '1'},
+                capture_output=True, encoding='utf-8')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((self.base / 'config/profiles.json').read_bytes(), before)
+            self.assertEqual(self.run_config('link'), link)
+            self.assertFalse(list((self.base / 'config').glob('profiles.rollback.*')))
+            if failure == 'both':
+                self.assertIn('не прошёл повторную проверку', result.stdout)
+            else:
+                self.assertIn('прокси работает', result.stdout)
 
     def test_invalid_changes_preserve_configuration(self):
         before = (self.base / 'config/profiles.json').read_bytes()
