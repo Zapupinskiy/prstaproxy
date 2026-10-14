@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -35,9 +37,42 @@ class ConfigurationTests(unittest.TestCase):
         self.run_config('mode', 'https-lanes')
         self.assertEqual(self.run_config('link'), link)
         self.assertEqual(self.run_config('mode'), 'https-lanes')
+        self.run_config('mode', 'https')
+        self.assertEqual(self.run_config('mode'), 'https')
+        self.assertEqual(self.run_config('link'), link)
         profile = json.loads((self.base / 'config/profiles.json').read_text())['profiles'][0]
         self.assertEqual(profile['backend'], '127.0.0.1:2398')
         self.assertEqual(len((self.base / 'config/token.key').read_bytes()), 32)
+
+    def test_mode_command_restarts_only_relay_after_valid_change(self):
+        root = SCRIPT.parent.parent
+        bash = shutil.which('bash') or 'C:/Program Files/Git/bin/bash.exe'
+        mock = r'''source "$1/prstaproxy.sh"
+backend_type(){ echo containers; }
+python3(){ "$TEST_PYTHON" "$@"; }
+compose(){ printf '%s\n' "$*" >> "$TEST_CALLS"; }
+webmtproxy mode "$TEST_MODE"
+'''
+        calls = self.base / 'calls'
+        environment = {**os.environ, 'BASE': self.base.as_posix(),
+                       'TEST_PYTHON': Path(sys.executable).as_posix(),
+                       'TEST_CALLS': calls.as_posix(), 'PYTHONUTF8': '1'}
+        link = self.run_config('link')
+        for mode in ('https-lanes', 'https'):
+            result = subprocess.run([bash, '-c', mock, '_', root.as_posix()],
+                                    env={**environment, 'TEST_MODE': mode},
+                                    capture_output=True, encoding='utf-8')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.run_config('mode'), mode)
+            self.assertEqual(self.run_config('link'), link)
+        self.assertEqual(calls.read_text().splitlines(), ['restart relay', 'restart relay'])
+        before = calls.read_bytes()
+        result = subprocess.run([bash, '-c', mock, '_', root.as_posix()],
+                                env={**environment, 'TEST_MODE': 'invalid'},
+                                capture_output=True, encoding='utf-8')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls.read_bytes(), before)
+        self.assertEqual(self.run_config('mode'), 'https')
 
     def test_invalid_changes_preserve_configuration(self):
         before = (self.base / 'config/profiles.json').read_bytes()
@@ -53,6 +88,7 @@ class ConfigurationTests(unittest.TestCase):
             self.run_config('secret', value)
             expected = value.lower()[-32:]
             self.assertEqual(self.run_config('secret'), 'dd' + expected)
+            self.assertEqual(self.run_config('secret-raw'), expected)
             self.assertIn('SECRET=' + expected + '\n', (self.base / 'config/backend.env').read_text())
             self.assertEqual(parse_qs(urlsplit(self.run_config('link')).query)['secret'][0], 'dd' + expected)
         before = self.run_config('secret')

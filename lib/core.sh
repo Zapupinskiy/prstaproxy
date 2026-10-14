@@ -335,7 +335,7 @@ webmtproxy(){
  if [[ "$(backend_type)" != containers ]]; then command webmtproxy "$@"; return; fi
  local action=${1:-link}; shift || true
  case "$action" in
-  link|mode|sponsor|secret|rotate-secret)
+  link|mode|sponsor|secret|secret-raw|rotate-secret)
    python3 "$APP/lib/config.py" "$BASE" "$action" "$@" || return 1
    if (($#)) || [[ "$action" == rotate-secret ]]; then
     if [[ "$action" == sponsor || "$action" == secret || "$action" == rotate-secret ]]; then compose up -d --force-recreate; else compose restart relay; fi
@@ -415,14 +415,14 @@ dashboard(){
 menu_management(){
  local choice
  while :; do
-  select_menu 'Управление' choice 'Режим передачи' 'Спонсорский канал' 'Управление сервисами' 'Сайт SelfSteal и TLS' 'Обновить' 'Секрет' 'Назад' || return 0
+  select_menu 'Настройки' choice 'Режим передачи' 'Спонсорский канал' 'Секрет' 'Управление сервисами' 'Сайт SelfSteal и TLS' 'Обновить скрипт' 'Назад' || return 0
   case "$choice" in
    0) if ensure_web >/dev/null; then menu_transport; else result_begin; warn 'Режим передачи недоступен'; wait_back; fi;;
    1) if ensure_web >/dev/null; then menu_sponsor; else result_begin; warn 'Спонсорский канал недоступен'; wait_back; fi;;
-   2) if [[ "$(backend_type)" == containers ]]; then menu_containers; else menu_services; fi;;
-   3) menu_selfsteal;;
-   4) result_begin; update_project || warn 'Обновление не завершено'; wait_back;;
-   5) menu_secret;;
+   2) menu_secret;;
+   3) if [[ "$(backend_type)" == containers ]]; then menu_containers; else menu_services; fi;;
+   4) menu_selfsteal;;
+   5) result_begin; update_project || warn 'Обновление не завершено'; wait_back;;
    6) return 0;;
   esac
  done

@@ -50,6 +50,9 @@ def main():
     elif action == 'link':
         print('https://t.me/webproxy?' + urlencode({
             'server': cfg['public_hostname'], 'secret': profile['secret']}))
+    elif action == 'secret-raw':
+        secret = profile['secret']
+        print(secret[2:] if len(secret) == 34 and secret.startswith('dd') else secret)
     elif action in ('secret', 'rotate-secret'):
         if action == 'secret' and len(sys.argv) == 3:
             print(profile['secret'])

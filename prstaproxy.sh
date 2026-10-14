@@ -169,7 +169,7 @@ try:
         if not isinstance(secret, str) or not secret:
             raise ValueError('секрет не обнаружен')
         print('Профиль:', profile.get('name', 'default'))
-        print('Текущий секрет:', secret)
+        print('Текущий секрет:', secret[2:] if len(secret) == 34 and secret.startswith('dd') else secret)
 except (OSError, ValueError, KeyError, TypeError) as error:
     print('Ошибка чтения секрета:', error, file=sys.stderr)
     sys.exit(1)
@@ -270,7 +270,7 @@ menu_secret(){
   [[ "$choice" != 5 ]] || return 0
   result_begin
   case "$choice" in
-   0) if [[ "$(backend_type)" == containers ]]; then webmtproxy secret || warn 'Не удалось получить секрет'; else show_current_secret || true; fi;;
+   0) if [[ "$(backend_type)" == containers ]]; then webmtproxy secret-raw || warn 'Не удалось получить секрет'; else show_current_secret || true; fi;;
    1) if yesno 'Сгенерировать новый секрет? Старые ссылки перестанут работать, соединения прервутся'; then
        if webmtproxy rotate-secret; then ok 'Секрет обновлён'; webmtproxy link; else warn 'Не удалось применить новый секрет; проверь состояние сервисов'; fi
       else info 'Отменено'; fi;;
@@ -340,11 +340,11 @@ main_menu(){
  [[ $EUID -eq 0 ]] || die 'Нужен root: sudo zlp'
  local choice
  while :; do
-  select_menu 'Главное меню' choice 'Установка' 'Управление' 'Обновить' 'Выход' || break
+  select_menu 'Главное меню' choice 'Установка прокси' 'Обновить' 'Настройки' 'Выход' || break
   case "$choice" in
    0) result_begin; install_new || warn 'Установка не завершена'; wait_back;;
-   1) menu_management;;
-   2) continue;;
+   1) continue;;
+   2) menu_management;;
    3) break;;
   esac
  done
