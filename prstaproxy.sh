@@ -263,6 +263,36 @@ menu_access(){
  done
 }
 
+menu_secret(){
+ local choice secret
+ while :; do
+  select_menu 'Секрет' choice 'Показать текущий секрет' 'Сгенерировать новый секрет' 'Ввести свой секрет' 'Показать ссылку подключения' 'Показать QR-код' 'Назад' || return 0
+  [[ "$choice" != 5 ]] || return 0
+  result_begin
+  case "$choice" in
+   0) if [[ "$(backend_type)" == containers ]]; then webmtproxy secret || warn 'Не удалось получить секрет'; else show_current_secret || true; fi;;
+   1) if yesno 'Сгенерировать новый секрет? Старые ссылки перестанут работать, соединения прервутся'; then
+       if webmtproxy rotate-secret; then ok 'Секрет обновлён'; webmtproxy link; else warn 'Не удалось применить новый секрет; проверь состояние сервисов'; fi
+      else info 'Отменено'; fi;;
+   2) if [[ "$(backend_type)" != containers ]]; then
+       warn 'Ввод своего секрета доступен для контейнерной установки'
+      else
+       ask secret 'Секрет: 32 hex символа или dd + 32 hex (Enter — отмена)' ''
+       secret=${secret,,}
+       if [[ -z "$secret" ]]; then info 'Отменено'
+       elif [[ "$secret" =~ ^([0-9a-f]{32}|dd[0-9a-f]{32})$ ]]; then
+        if yesno 'Установить этот секрет? Старые ссылки перестанут работать, соединения прервутся'; then
+         if webmtproxy secret "$secret"; then ok 'Секрет обновлён'; webmtproxy link; else warn 'Не удалось применить новый секрет; проверь состояние сервисов'; fi
+        else info 'Отменено'; fi
+       else warn 'Некорректный секрет: нужны 32 hex символа или dd + 32 hex'; fi
+      fi;;
+   3) webmtproxy link || warn 'Не удалось получить ссылку';;
+   4) if command -v qrencode >/dev/null; then webmtproxy qr || true; else warn 'Установи qrencode для отображения QR-кода'; fi;;
+  esac
+  wait_back
+ done
+}
+
 menu_sponsor(){
  local choice tag
  while :; do

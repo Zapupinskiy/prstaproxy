@@ -50,8 +50,26 @@ def main():
     elif action == 'link':
         print('https://t.me/webproxy?' + urlencode({
             'server': cfg['public_hostname'], 'secret': profile['secret']}))
-    elif action == 'secret':
-        print(profile['secret'])
+    elif action in ('secret', 'rotate-secret'):
+        if action == 'secret' and len(sys.argv) == 3:
+            print(profile['secret'])
+        else:
+            secret = os.urandom(16).hex() if action == 'rotate-secret' else sys.argv[3].lower()
+            if secret.startswith('dd') and len(secret) == 34:
+                secret = secret[2:]
+            if not re.fullmatch('[0-9a-f]{32}', secret):
+                raise ValueError('Секрет должен содержать 32 hex символа или dd + 32 hex символа')
+            for item in profiles['profiles']:
+                item['secret'] = 'dd' + secret
+            path = config / 'backend.env'
+            content = path.read_text()
+            if not re.search(r'^SECRET=[0-9a-f]{32}$', content, re.M):
+                raise ValueError('Не найден секрет MTProxy в backend.env')
+            tmp = path.with_suffix('.new')
+            tmp.write_text(re.sub(r'^SECRET=.*$', 'SECRET=' + secret, content, flags=re.M))
+            tmp.chmod(0o600)
+            os.replace(tmp, path)
+            save(config / 'profiles.json', profiles)
     elif action == 'mode':
         if len(sys.argv) == 3:
             print(profile.get('carrier_mode', 'https'))
