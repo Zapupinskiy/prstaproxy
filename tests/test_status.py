@@ -48,7 +48,7 @@ class StatusTests(unittest.TestCase):
 
     def test_unhealthy_relay_is_reported_under_status(self):
         output = self.render(TEST_RELAY='running / unhealthy')
-        self.assertIn('Статус НЕ ОК\n    relay — running / unhealthy', output)
+        self.assertIn('Статус НЕ ОК ✗\n    relay — running / unhealthy', output)
         self.assertNotIn('caddy —', output)
         self.assertNotIn('mtproxy —', output)
 
@@ -59,7 +59,7 @@ class StatusTests(unittest.TestCase):
 
     def test_legacy_stack_checks_required_services_only(self):
         output = self.render(TEST_BACKEND='webmtproxy', TEST_FAILED_SERVICE='mtproxy')
-        self.assertIn('Статус НЕ ОК\n    mtproxy — failed', output)
+        self.assertIn('Статус НЕ ОК ✗\n    mtproxy — failed', output)
         output = self.render(TEST_BACKEND='webmtproxy', TEST_FAILED_SERVICE='telemt')
         self.assertIn('Статус ОК', output)
 

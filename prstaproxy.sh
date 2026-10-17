@@ -5,11 +5,11 @@ DOMAIN=${DOMAIN:-}; EMAIL=""; MODE=${MODE:-https}; TAG=""; BASE=${BASE:-/opt/pro
 RELAY_PORT=""; ADMIN_PORT=""
 NCONF=/etc/nginx/sites-available/prostoweb; NLINK=/etc/nginx/sites-enabled/prostoweb
 LOG=${LOG:-/var/log/prostoweb-install.log}
-red=$'\033[31m'; green=$'\033[32m'; cyan=$'\033[36m'; clear=$'\033[0m'
+red=$'\033[31m'; green=$'\033[32m'; cyan=$'\033[34m'; clear=$'\033[0m'
 info(){ printf '%s[•]%s %s\n' "$cyan" "$clear" "$*"; }
 warn(){ printf "\033[33m[!]%s %s\n" "$clear" "$*"; }
 ok(){ printf '%s[✓]%s %s\n' "$green" "$clear" "$*"; }
-die(){ printf '%s[✗] %s%s\n' "$red" "$*" "$clear" >&2; exit 1; }
+die(){ printf '%s✗%s %s\n' "$red" "$clear" "$*" >&2; exit 1; }
 ask(){ local dest=$1 label=$2 default=${3:-} ans; read -r -p "$label${default:+ [Enter = $default]}: " ans </dev/tty || return 1; printf -v "$dest" '%s' "${ans:-$default}"; }
 yesno(){ local reply; read -r -p "$1 [y/N]: " reply </dev/tty; [[ "$reply" =~ ^[Yy]$ ]]; }
 port_busy(){ ss -H -ltn "( sport = :$1 )" | grep -q .; }
@@ -218,7 +218,7 @@ select_menu(){
   esac
  done
 }
-ui_separator(){ printf '\n%s──────────────────────────────────────────────────────%s\n' "$red" "$clear"; }
+ui_separator(){ printf '\n%s──────────────────────────────────────────────────────%s\n' "$cyan" "$clear"; }
 result_begin(){
  printf '\033[2J\033[H'
  menu_header

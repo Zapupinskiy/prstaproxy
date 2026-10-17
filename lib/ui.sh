@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Shared screen state is kept in the parent shell, never in background workers.
 UI_HEADER=$'\033[34m'
-UI_TITLE=$'\033[36m'
-UI_LOADER=$'\033[35m'
+UI_TITLE=$'\033[34m'
+UI_LOADER=$'\033[34m'
 UI_RESET=$'\033[0m'
 declare -a UI_ANSWERS=() UI_HISTORY=() UI_HISTORY_IDS=()
 UI_CURRENT=
@@ -24,7 +24,7 @@ ui_status(){
   skipped) color=$'\033[90m'; symbol='−';;
   *) color=$UI_LOADER; symbol='…';;
  esac
- printf '%s%s %s%s\n' "$color" "$symbol" "$label" "$UI_RESET"
+ printf '%s%s%s %s\n' "$color" "$symbol" "$UI_RESET" "$label"
 }
 summary_add(){
  local index

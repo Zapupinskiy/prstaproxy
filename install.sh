@@ -15,7 +15,7 @@ bootstrap_screen(){
  printf '\033[2J\033[H\033[34m╔════════════════════════════════════════════════════════════╗\n║ ПРОСТОВПН WEB PROXY — загрузчик\n╚════════════════════════════════════════════════════════════╝\033[0m\n'
  local item
  for item in "${bootstrap_history[@]}"; do printf '%s\n' "$item"; done
- printf '\n\033[36m%s\033[0m\n' "$1"
+ printf '\n\033[34m%s\033[0m\n' "$1"
 }
 bootstrap_stage(){
  local title=$1; shift
@@ -23,14 +23,14 @@ bootstrap_stage(){
  local pid start=$SECONDS frame=0 chars='|/-\' rc=0
  "$@" >> "$log" 2>&1 & pid=$!
  while kill -0 "$pid" 2>/dev/null; do
-  printf '\r\033[35m  %s %s · %02d:%02d\033[0m' "${chars:frame%4:1}" "$title" "$(((SECONDS-start)/60))" "$(((SECONDS-start)%60))"
+  printf '\r\033[34m  %s %s · %02d:%02d\033[0m' "${chars:frame%4:1}" "$title" "$(((SECONDS-start)/60))" "$(((SECONDS-start)%60))"
   frame=$((frame+1)); sleep 0.2
  done
  wait "$pid" || rc=$?
  local result color
  if ((rc)); then result='✗'; color=$'\033[31m'; else result='✓'; color=$'\033[32m'; fi
- printf '\r%s  %s %s · %02d:%02d\033[0m\n' "$color" "$result" "$title" "$(((SECONDS-start)/60))" "$(((SECONDS-start)%60))"
- bootstrap_history+=("$color$result $title"$'\033[0m')
+ printf '\r  %s%s\033[0m %s · %02d:%02d\n' "$color" "$result" "$title" "$(((SECONDS-start)/60))" "$(((SECONDS-start)%60))"
+ bootstrap_history+=("$color$result"$'\033[0m'" $title")
  if ((rc)); then tail -n 20 "$log" >&2; return "$rc"; fi
 }
 bootstrap_screen 'Проверка зависимостей загрузчика'
@@ -38,14 +38,14 @@ missing=()
 for package in git curl ca-certificates; do
  status=$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)
  if [[ "$status" == 'install ok installed' ]]; then
-  printf '\033[32m✓ %s уже установлен\033[0m\n' "$package"
- else missing+=("$package"); printf '\033[33m! %s отсутствует\033[0m\n' "$package"; fi
+  printf '\033[32m✓\033[0m %s уже установлен\n' "$package"
+ else missing+=("$package"); printf '\033[33m!\033[0m %s отсутствует\n' "$package"; fi
 done
 if ((${#missing[@]})); then
  bootstrap_stage 'Обновление списка пакетов' apt-get update
  bootstrap_stage 'Недостающие зависимости загрузчика' apt-get install -y --no-install-recommends "${missing[@]}"
 else
- bootstrap_history+=($'\033[90m− Установка зависимостей загрузчика не требуется\033[0m')
+ bootstrap_history+=($'\033[90m−\033[0m Установка зависимостей загрузчика не требуется')
 fi
 base=/opt/prostoweb
 mkdir -p "$base/app/releases"

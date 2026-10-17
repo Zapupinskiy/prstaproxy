@@ -528,18 +528,18 @@ dashboard(){
    [[ "$state" == active ]] || problems+=("$unit — ${state:-недоступен}")
   done
  else problems+=('Прокси не установлен'); fi
- dashboard_line '  %sРежим%s %s%s%s\n\n' "$cyan" "$clear" "$green" "$mode" "$clear"
+ dashboard_line '  %sРежим%s %s%s%s\n\n' "$cyan" "$clear" "$clear" "$mode" "$clear"
  if ((${#problems[@]}==0)); then
-  dashboard_line '  %sСтатус%s %sОК%s\n' "$cyan" "$clear" "$green" "$clear"
+  dashboard_line '  %sСтатус%s ОК %s✓%s\n' "$cyan" "$clear" "$green" "$clear"
  else
-  dashboard_line '  %sСтатус%s %sНЕ ОК%s\n' "$cyan" "$clear" "$red" "$clear"
-  for problem in "${problems[@]}"; do dashboard_line '    %s%s%s\n' "$red" "$problem" "$clear"; done
+  dashboard_line '  %sСтатус%s НЕ ОК %s✗%s\n' "$cyan" "$clear" "$red" "$clear"
+  for problem in "${problems[@]}"; do dashboard_line '    %s\n' "$problem"; done
  fi
- dashboard_line '\n  %sПодключения%s %s%s%s\n' "$cyan" "$clear" "$green" "${users:-—}" "$clear"
+ dashboard_line '\n  %sПодключения%s %s%s%s\n' "$cyan" "$clear" "$clear" "${users:-—}" "$clear"
  dashboard_line '  %sПриём%s %s · %sОтдача%s %s\n\n' "$cyan" "$clear" "$rx" "$cyan" "$clear" "$tx"
  if [[ "$type" == containers || "$type" == webmtproxy ]]; then
-  dashboard_line '  %sСсылка%s %s%s%s\n' "$cyan" "$clear" "$green" "$(webmtproxy link 2>/dev/null || echo недоступно)" "$clear"
-  dashboard_line '  %sСайт%s   %shttps://%s/%s\n' "$cyan" "$clear" "$green" "$domain" "$clear"
+  dashboard_line '  %sСсылка%s %s%s%s\n' "$cyan" "$clear" "$clear" "$(webmtproxy link 2>/dev/null || echo недоступно)" "$clear"
+  dashboard_line '  %sСайт%s   %shttps://%s/%s\n' "$cyan" "$clear" "$clear" "$domain" "$clear"
  fi
  printf '%s' "$DASH_TEXT"
 }

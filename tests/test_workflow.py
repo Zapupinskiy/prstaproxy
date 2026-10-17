@@ -82,10 +82,10 @@ screen_begin 4 'Итог'
         self.assertEqual(len(screens), 3)
         self.assertIn('Домен: proxy.example.com', screens[1])
         self.assertIn('Режим: https-lanes', screens[1])
-        self.assertIn('\x1b[32m✓ 2', screens[1])
-        self.assertIn('\x1b[31m✗ 3', screens[2])
+        self.assertIn('\x1b[32m✓\x1b[0m 2', screens[1])
+        self.assertIn('\x1b[31m✗\x1b[0m 3', screens[2])
         self.assertIn('\x1b[34m', screens[2])
-        self.assertIn('\x1b[36mЭТАП 4', screens[2])
+        self.assertIn('\x1b[34mЭТАП 4', screens[2])
 
     def test_dependencies_skip_apt_when_everything_present(self):
         output = self.shell('''
@@ -117,7 +117,7 @@ if stage 7 build bash -c 'exit 17'; then exit 99; else rc=$?; fi
 [[ $rc == 17 ]]
 screen_begin 8 retry
 ''', Path(temporary).as_posix())
-            self.assertIn('\x1b[31m✗ 7', output.split('\x1b[2J\x1b[H')[-1])
+            self.assertIn('\x1b[31m✗\x1b[0m 7', output.split('\x1b[2J\x1b[H')[-1])
 
     def test_install_checks_dependencies_before_network_and_prompts(self):
         with tempfile.TemporaryDirectory() as temporary:
