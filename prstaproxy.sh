@@ -7,11 +7,11 @@ NCONF=/etc/nginx/sites-available/prostoweb; NLINK=/etc/nginx/sites-enabled/prost
 LOG=${LOG:-/var/log/prostoweb-install.log}
 red=$'\033[31m'; green=$'\033[32m'; cyan=$'\033[36m'; clear=$'\033[0m'
 info(){ printf '%s[•]%s %s\n' "$cyan" "$clear" "$*"; }
-warn(){ printf "%s[!]%s %s\n" "$cyan" "$clear" "$*"; }
+warn(){ printf "\033[33m[!]%s %s\n" "$clear" "$*"; }
 ok(){ printf '%s[✓]%s %s\n' "$green" "$clear" "$*"; }
 die(){ printf '%s[✗] %s%s\n' "$red" "$*" "$clear" >&2; exit 1; }
-ask(){ local dest=$1 label=$2 default=${3:-} ans; read -r -p "$label${default:+ [$default]}: " ans; printf -v "$dest" '%s' "${ans:-$default}"; }
-yesno(){ local reply; read -r -p "$1 [y/N]: " reply; [[ "$reply" =~ ^[Yy]$ ]]; }
+ask(){ local dest=$1 label=$2 default=${3:-} ans; read -r -p "$label${default:+ [Enter = $default]}: " ans </dev/tty || return 1; printf -v "$dest" '%s' "${ans:-$default}"; }
+yesno(){ local reply; read -r -p "$1 [y/N]: " reply </dev/tty; [[ "$reply" =~ ^[Yy]$ ]]; }
 port_busy(){ ss -H -ltn "( sport = :$1 )" | grep -q .; }
 choose_relay_ports(){
  local p q
@@ -354,20 +354,17 @@ main_menu(){
 }
 APP=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$APP/lib/core.sh"
+source "$APP/lib/interface.sh"
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
  case "${1:-}" in
-  обновить|update|--update) update_project;;
-  --install) install_new;;
   --install-menu|--update-menu) register_commands;;
-  --status) dashboard;;
   --selfsteal) require_root; menu_selfsteal;;
-  --version) printf '%s\n' "$VERSION";;
   '')
    require_root
    if [[ "$(backend_type)" == containers && ! -f "$BASE/.selfsteal" && -f "$BASE/.installed" ]]; then
     integrate_existing || warn 'SelfSteal не интегрирован. Прежняя конфигурация восстановлена.'
    fi
    register_commands; main_menu;;
-  *) die 'Команды: zlp | zlp обновить | zlp --install | zlp --status | zlp --version';;
+  *) dispatch_command "$@";;
  esac
 fi

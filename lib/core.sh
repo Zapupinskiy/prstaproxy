@@ -26,23 +26,30 @@ EOF
 # A failed stage is waited on explicitly; background jobs cannot kill the menu.
 stage(){
  local number=$1 title=$2; shift 2
- local start=$SECONDS pid rc=0 frame=0 frames='|/-\'
- printf '[%s/7] %s\n' "$number" "$title"
- APP="$APP" BASE="$BASE" LOG="$LOG" DOMAIN="$DOMAIN" MODE="$MODE" SELFSTEAL_DIR="$SELFSTEAL_DIR" \
-  bash -c 'source "$APP/prstaproxy.sh"; "$@"' _ "$@" >> "$LOG" 2>&1 & pid=$!
- while kill -0 "$pid" 2>/dev/null; do
-  printf '\r  %s %s · %02d:%02d' "${frames:frame%4:1}" "$title" "$(((SECONDS-start)/60))" "$(((SECONDS-start)%60))"
-  frame=$((frame+1)); sleep 0.2
- done
- wait "$pid" || rc=$?
- printf '\r  %s %s · %02d:%02d\n' "$([[ $rc == 0 ]] && echo '✓' || echo '✗')" "$title" "$(((SECONDS-start)/60))" "$(((SECONDS-start)%60))"
- if ((rc)); then tail -n 25 "$LOG" >&2; warn "Этап $number завершился с ошибкой. Журнал: $LOG"; return "$rc"; fi
+ print_step "$number" "$title"
+ local rc=0
+ run_live_log env APP="$APP" BASE="$BASE" LOG="$LOG" DOMAIN="$DOMAIN" MODE="$MODE" \
+  INSTALL_SECRET="${INSTALL_SECRET:-}" INSTALL_TAG="${INSTALL_TAG:-}" SELFSTEAL_DIR="$SELFSTEAL_DIR" \
+  bash -c 'source "$APP/prstaproxy.sh"; "$@"' _ "$@" || rc=$?
+ if ((rc)); then screen_finish error; else screen_finish success; fi
+ return "$rc"
 }
+
 dependencies(){
  export DEBIAN_FRONTEND=noninteractive
- apt-get update
- apt-get install -y --no-install-recommends curl git ca-certificates python3 openssl iproute2 dnsutils qrencode nano jq
- if ! command -v docker >/dev/null; then apt-get install -y docker.io; fi
+ local package status missing=()
+ for package in curl git ca-certificates python3 openssl iproute2 dnsutils qrencode nano jq; do
+  status=$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)
+  if [[ "$status" == 'install ok installed' ]]; then ui_status success "$package уже установлен"
+  else missing+=("$package"); ui_status warning "$package отсутствует"; fi
+ done
+ if ! command -v docker >/dev/null; then missing+=(docker.io); fi
+ if ((${#missing[@]})) || ! docker compose version >/dev/null 2>&1; then
+  apt-get update || return 1
+ fi
+ if ((${#missing[@]})); then
+  apt-get install -y --no-install-recommends "${missing[@]}" || return 1
+ else ui_status skipped 'Установка системных пакетов не требуется'; fi
  if ! docker compose version >/dev/null 2>&1; then
   if apt-cache show docker-compose-v2 >/dev/null 2>&1; then apt-get install -y docker-compose-v2
   elif apt-cache show docker-compose-plugin >/dev/null 2>&1; then apt-get install -y docker-compose-plugin
@@ -75,6 +82,8 @@ check_dns(){
 }
 write_deployment(){
  python3 "$APP/lib/config.py" "$BASE" init "$DOMAIN" "$MODE" "$(cat "$BASE/public-ip")"
+ [[ -z "${INSTALL_SECRET:-}" ]] || python3 "$APP/lib/config.py" "$BASE" secret "$INSTALL_SECRET"
+ [[ -z "${INSTALL_TAG:-}" ]] || python3 "$APP/lib/config.py" "$BASE" sponsor "$INSTALL_TAG"
  prepare_selfsteal
  write_compose
 }
@@ -130,8 +139,8 @@ integrate_existing(){
  mkdir -p "$BASE/backups"
  snapshot_deployment "$destination" || return 1
  info 'Объединяю существующий WEB Proxy с SelfSteal. Домен, секрет и сайт сохраняются.'
- if stage 4 'Нативная установка SelfSteal и общий сайт' resume_deployment &&
-    stage 6 'Проверка Caddy и запуск общих контейнеров' start_deployment --force-recreate &&
+ if stage 7 'Нативная установка SelfSteal и общий сайт' resume_deployment &&
+    stage 9 'Проверка Caddy и запуск общих контейнеров' start_deployment --force-recreate &&
     stage 7 'Проверка WEB Proxy и SelfSteal' verify_deployment; then
   register_commands
   ok "SelfSteal интегрирован. Резервная копия: $destination"
@@ -281,20 +290,36 @@ verify_deployment(){
  return 1
 }
 install_new(){
+ wizard_reset
+ terminal_clear
+ local rc=0
+ install_flow || rc=$?
+ if ((rc)) && [[ "${UI_FINISHED:-0}" != 1 ]]; then screen_finish error; fi
+ INSTALL_WIZARD=0
+ return "$rc"
+}
+install_flow(){
  require_root
  local os_id
  os_id=$(source /etc/os-release; printf '%s' "$ID")
  [[ "$os_id" == ubuntu || "$os_id" == debian ]] || { warn 'Нужна Ubuntu/Debian с systemd'; return 1; }
  [[ $(uname -m) == x86_64 ]] || { warn 'MTProxy требует x86_64'; return 1; }
+ mkdir -p "$BASE"; chmod 700 "$BASE"
+ touch "$LOG"; chmod 600 "$LOG"
+ stage 0 'Проверка зависимостей и установка недостающего' dependencies || return 1
+ summary_add 'Зависимости' 'проверены'
  if [[ "$(backend_type)" == containers && ! -f "$BASE/.installed" ]]; then
   info 'Продолжаю незавершённую установку, сохраняя домен и секрет.'
   touch "$LOG"; chmod 600 "$LOG"
- stage 4 'SelfSteal и сохранённая конфигурация' resume_deployment || return 1
-  stage 5 'Сборка backend и образ SelfSteal' build_deployment || return 1
-  stage 6 'Проверка Caddy, запуск контейнеров и TLS' start_deployment || return 1
-  stage 7 'Проверка готовности и HTTPS' verify_deployment || return 1
+  DOMAIN=$(active_domain); MODE=$(active_mode)
+  summary_add 'Домен' "$DOMAIN"; summary_add 'Режим' "$MODE"
+  stage 7 'SelfSteal и сохранённая конфигурация' resume_deployment || return 1
+  stage 8 'Сборка backend и образ SelfSteal' build_deployment || return 1
+  stage 9 'Проверка Caddy, запуск контейнеров и TLS' start_deployment || return 1
+  stage 10 'Проверка готовности и HTTPS' verify_deployment || return 1
   touch "$BASE/.installed"
   register_commands
+  write_info_file
   ok "Установка $VERSION завершена"
   webmtproxy link
   return 0
@@ -303,33 +328,74 @@ install_new(){
  if [[ "$(backend_type)" != none ]]; then warn 'Прокси уже установлен. Используй zlp обновить; настройки сохраняются.'; return 0; fi
  mkdir -p "$BASE"; chmod 700 "$BASE"
  touch "$LOG"; chmod 600 "$LOG"
- stage 1 'Зависимости установщика и Docker Compose' dependencies || return 1
+ check_connectivity || return 1
+ print_step 2 'Базовая настройка'
+ info 'WEB Proxy использует HTTPS :443; SelfSteal :9443 доступен только локально.'
+ while :; do
+  ask DOMAIN 'Домен прокси (без https://)' "${DOMAIN:-}" || return 1
+  DOMAIN=${DOMAIN,,}
+  valid_domain "$DOMAIN" && break
+  warn 'Некорректный домен'
+ done
+ summary_add 'Домен' "$DOMAIN"
+ summary_add 'Порт WEB Proxy' 443
+ screen_finish success
+ local selected
+ select_menu 'WEB-транспорт' selected 'iPhone / все платформы — https' 'Поддерживаемые клиенты — https-lanes' || return 1
+ case "$selected" in 0) MODE=https;; 1) MODE=https-lanes;; esac
+ summary_add 'Режим' "$MODE"
+ screen_finish success
+ INSTALL_SECRET=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+ print_step 4 'Регистрация прокси в Telegram'
+ printf '  1. Откройте @MTProxybot и отправьте /newproxy\n  2. Хост: %s:443\n  3. Секрет: %s\n' "$DOMAIN" "$INSTALL_SECRET"
+ ask INSTALL_TAG 'AD_TAG от @MTProxybot: 32 hex (Enter = пропустить)' || return 1
+ if [[ -n "$INSTALL_TAG" && ! "$INSTALL_TAG" =~ ^[0-9a-fA-F]{32}$ ]]; then
+  warn 'AD_TAG должен содержать 32 hex символа'; return 1
+ fi
+ summary_add 'AD_TAG' "${INSTALL_TAG:-пропущен}"
+ screen_finish "$([[ -n "$INSTALL_TAG" ]] && echo success || echo skipped)"
+ print_step 5 'Telegram-бот для отправки ссылки (опционально)'
+ local bot_token chat_id
+ printf 'Bot Token (Enter = пропустить): ' >/dev/tty
+ read -r -s bot_token </dev/tty || return 1
+ printf '\n' >/dev/tty
+ chat_id=
+ if [[ -n "$bot_token" ]]; then
+  ask chat_id 'Chat ID' || return 1
+  [[ "$bot_token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ && "$chat_id" =~ ^-?[0-9]+$ ]] || { warn 'Некорректный Bot Token или Chat ID'; return 1; }
+ fi
+ if [[ -n "$bot_token" ]]; then
+  summary_add 'Telegram-бот' 'настроен (токен скрыт)'
+  summary_add 'Chat ID' "$chat_id"
+  screen_finish success
+ else
+  summary_add 'Telegram-бот' 'пропущен'
+  screen_finish skipped
+ fi
+ stage 6 'Проверка портов и DNS → IPv4 сервера' check_install_network || return 1
+ stage 7 'Нативная установка SelfSteal, сайт и конфигурация' write_deployment || return 1
+ stage 8 'Сборка backend и образ SelfSteal' build_deployment || return 1
+ stage 9 'Проверка Caddy, запуск SelfSteal и WEB Proxy' start_deployment || return 1
+ stage 10 'Проверка готовности и HTTPS' verify_deployment || return 1
+ touch "$BASE/.installed"
+ register_commands
+ write_info_file
+ if [[ -n "$bot_token" ]]; then
+  screen_begin 11 'Отправка ссылки в Telegram'
+  if send_connection_message "$bot_token" "$chat_id"; then screen_finish success
+  else screen_finish warning; warn 'Ссылка не отправлена. Прокси установлен; ссылка доступна через zlp links.'; fi
+ fi
+ screen_begin 12 'Готово'
+ screen_finish success
+ ok "ПРОСТОВПН WEB PROXY $VERSION установлен. Меню: zlp"
+ webmtproxy link
+}
+check_install_network(){
  local port
  for port in 80 443 9443; do
   if port_busy "$port"; then warn "Порт $port занят. Освободи его перед установкой."; return 1; fi
  done
- printf '[2/7] Домен и проверка DNS\n'
- while :; do
-  ask DOMAIN 'Домен прокси (без https://)'
-  DOMAIN=${DOMAIN,,}
-  if ! valid_domain "$DOMAIN"; then warn 'Некорректный домен'; continue; fi
-  stage 2 'Проверка DNS → IPv4 сервера' check_dns && break
-  yesno 'Повторить ввод домена?' || return 1
- done
- local selected start=$SECONDS
- printf '[3/7] Выбор режима\n'
- select_menu 'Установка · выбор режима' selected 'iPhone — https' 'Остальные устройства — https-lanes' || return 1
- result_begin
- case "$selected" in 0) MODE=https;; 1) MODE=https-lanes;; esac
- printf '  ✓ Режим %s · %s с\n' "$MODE" "$((SECONDS-start))"
- stage 4 'Нативная установка SelfSteal, сайт и конфигурация' write_deployment || return 1
- stage 5 'Сборка backend и образ SelfSteal' build_deployment || return 1
- stage 6 'Проверка Caddy, запуск SelfSteal и WEB Proxy' start_deployment || return 1
- stage 7 'Проверка готовности и HTTPS' verify_deployment || return 1
- touch "$BASE/.installed"
- register_commands
- ok "ПРОСТОВПН WEB PROXY $VERSION установлен. Меню: zlp"
- webmtproxy link
+ check_dns
 }
 verify_mode(){
  local attempt domain
@@ -534,7 +600,7 @@ update_project(){
 }
 validate_release(){
  local directory=$1 file
- for file in prstaproxy.sh install.sh lib/core.sh lib/selfsteal.sh vendor/selfsteal.sh docker/mtproxy-entrypoint.sh; do
+ for file in prstaproxy.sh install.sh lib/core.sh lib/interface.sh lib/ui.sh lib/selfsteal.sh vendor/selfsteal.sh docker/mtproxy-entrypoint.sh; do
   bash -n "$directory/$file" || return 1
  done
  python3 -m py_compile "$directory/lib/config.py" "$directory/lib/selfsteal_config.py"
