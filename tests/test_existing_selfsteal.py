@@ -32,6 +32,17 @@ check_install_network
         self.assertIn('DNS-CHECKED', output)
         self.assertIn('Порт 80 занят установленным SelfSteal', output)
 
+    def test_partial_native_install_is_not_mistaken_for_external(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            native = base / 'native'
+            (native / 'html').mkdir(parents=True)
+            for name in ('docker-compose.yml', '.env', 'Caddyfile', 'html/index.html'):
+                (native / name).write_text('partial')
+            (base / '.selfsteal-preparing').touch()
+            self.shell('BASE=$2; SELFSTEAL_DIR="$BASE/native"; existing_selfsteal',
+                       base.as_posix(), success=False)
+
     def test_other_listener_is_still_rejected(self):
         output = self.shell('''
 existing_selfsteal(){ return 0; }

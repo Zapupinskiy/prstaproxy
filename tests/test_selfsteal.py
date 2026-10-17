@@ -103,5 +103,37 @@ class SelfStealIntegrationTests(unittest.TestCase):
         self.assertFalse((self.base / '.selfsteal').exists())
 
 
+class NativeInstallationTests(unittest.TestCase):
+    def test_original_install_selects_template_without_reading_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            (base / 'public-ip').write_text('203.0.113.1')
+            native = base / 'native'
+            native.mkdir()
+            adapter = (ROOT / 'lib/selfsteal.sh').read_text()
+            prefix = adapter.split('if [[ "$zlp_internal" == true ]]; then')[0]
+            prefix = prefix.replace('ZLP_APP=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)',
+                                    'ZLP_APP=$TEST_APP')
+            code = 'set -- --zlp-prepare proxy.example.com; ' + prefix + r'''
+ZLP_NATIVE_INSTALL=1
+FORCE_MODE=true; FORCE_DOMAIN=proxy.example.com; FORCE_PORT=9443; FORCE_TEMPLATE=
+check_running_as_root(){ :; }
+check_system_requirements(){ return 0; }
+validate_caddyfile(){ return 0; }
+ensure_runtime_image(){ return 0; }
+download_template(){ printf '%s' "$1" > "$APP_DIR/chosen-template"; }
+read(){ echo UNEXPECTED-PROMPT; return 99; }
+native_install_command
+'''
+            result = subprocess.run([BASH, '-c', code], env={**os.environ,
+                'BASE': base.as_posix(), 'SELFSTEAL_DIR': native.as_posix(),
+                'TEST_APP': ROOT.as_posix()}, capture_output=True,
+                encoding='utf-8', errors='replace')
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertNotIn('UNEXPECTED-PROMPT', result.stdout)
+            chosen = int((native / 'chosen-template').read_text())
+            self.assertIn(chosen, range(1, 12))
+            self.assertIn('SELF_STEAL_DOMAIN=proxy.example.com', (native / '.env').read_text())
+
 if __name__ == '__main__':
     unittest.main()

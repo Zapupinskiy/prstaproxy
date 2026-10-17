@@ -9,6 +9,7 @@ zlp_action=${1:-menu}
 zlp_internal=false
 case "$zlp_action" in
  --zlp-prepare) zlp_internal=true; zlp_domain=$2; zlp_template=${3:-}; set -- --caddy;;
+ --zlp-template) zlp_internal=true; zlp_template=${2:-random}; set -- --caddy;;
  --zlp-validate|--zlp-image) zlp_internal=true; set -- --caddy;;
  --help|-h|help) set -- --caddy help;;
  '') set -- --caddy menu;;
@@ -18,6 +19,7 @@ if [[ -r "$ZLP_BASE/public-ip" ]]; then ZLP_NODE_IP=$(cat "$ZLP_BASE/public-ip")
 source <(sed -e '/^# Main execution/,$d' \
  -e 's/^NODE_IP=$(get_server_ip)$/NODE_IP=${ZLP_NODE_IP:-$(get_server_ip)}/' \
  "$ZLP_APP/vendor/selfsteal.sh")
+eval "$(declare -f install_command | sed '1s/install_command/native_install_command/')"
 if [[ "$WEB_SERVER" != caddy && -f "$ZLP_BASE/.selfsteal" ]]; then
  log_error 'Общая установка использует Caddy; переключение на Nginx требует отдельной миграции.'
  exit 1
@@ -29,6 +31,10 @@ WEB_SERVER=caddy
 VOLUME_PREFIX=caddy
 # Native validation runs a temporary container; include the managed import.
 docker(){
+ if [[ "${ZLP_NATIVE_INSTALL:-0}" == 1 && "${1:-}" == compose && "${2:-}" == up ]]; then
+  log_info 'Запуск Caddy отложен до запуска общего WEB Proxy стека'
+  return 0
+ fi
  if [[ -f "$ZLP_BASE/selfsteal-existing.json" && "${1:-}" == run ]]; then
   local original_image argument
   local adjusted=()
@@ -54,10 +60,14 @@ get_caddy_data_volume(){
 main_menu(){ exec bash "$ZLP_APP/prstaproxy.sh" --selfsteal; }
 install_command(){ exec bash "$ZLP_APP/prstaproxy.sh" --install; }
 update_command(){ exec bash "$ZLP_APP/prstaproxy.sh" обновить; }
+template_command(){ exec bash "$ZLP_APP/prstaproxy.sh" --templates; }
 check_for_updates_silent(){ :; }
 # Native screens stay inside the result block drawn by the parent menu.
 clear(){ :; }
-install_management_script(){ bash "$ZLP_APP/prstaproxy.sh" --install-menu; }
+install_management_script(){
+ [[ "${ZLP_NATIVE_INSTALL:-0}" != 1 ]] || return 0
+ bash "$ZLP_APP/prstaproxy.sh" --install-menu
+}
 maybe_restart_webserver(){
  # Caddy's file_server sees template changes immediately; no relay restart needed.
  log_success 'Сайт SelfSteal обновлён; WEB-релей использует тот же сайт.'
@@ -68,6 +78,16 @@ if [[ "$zlp_internal" == true ]]; then
    create_dir_safe "$APP_DIR"
    create_dir_safe "$HTML_DIR"
    create_dir_safe "$APP_DIR/logs"
+   if [[ ! -f "$APP_DIR/Caddyfile" && ! -s "$HTML_DIR/index.html" ]]; then
+    # Run the original install workflow with its own random template selection,
+    # download fallbacks and randomization, without a second interactive wizard.
+    ZLP_NATIVE_INSTALL=1
+    touch "$ZLP_BASE/.selfsteal-preparing"
+    FORCE_MODE=true; FORCE_DOMAIN=$zlp_domain; FORCE_PORT=9443
+    FORCE_TEMPLATE=$zlp_template
+    native_install_command || exit $?
+    exit 0
+   fi
    if [[ ! -f "$APP_DIR/Caddyfile" ]]; then create_caddy_config "$zlp_domain" 9443; fi
    if [[ ! -s "$HTML_DIR/index.html" ]]; then
     template=${zlp_template:-$((RANDOM%11+1))}
@@ -75,6 +95,12 @@ if [[ "$zlp_internal" == true ]]; then
    fi
    ;;
   --zlp-validate) validate_caddyfile;;
+  --zlp-template)
+   [[ "$zlp_template" != random ]] || zlp_template=$((RANDOM % 11 + 1))
+   [[ -n "${TEMPLATE_FOLDERS[$zlp_template]:-}" ]] || { log_error 'Неизвестный шаблон'; exit 1; }
+   download_template "$zlp_template" || exit $?
+   maybe_restart_webserver
+   ;;
   --zlp-image) ensure_runtime_image;;
  esac
  exit 0

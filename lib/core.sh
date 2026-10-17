@@ -26,7 +26,9 @@ EOF
 # A failed stage is waited on explicitly; background jobs cannot kill the menu.
 stage(){
  local number=$1 title=$2; shift 2
- if [[ "${UI_STAGE_ID:-}" != "$number" ]]; then print_step "$number" "$title"
+ if [[ "${UI_STAGE_ID:-}" != "$number" ]]; then
+  print_step "$number" "$title"
+  stage_navigation "$number" "$title" || { WIZARD_BACK=1; return 2; }
  else printf '\n%s%s%s\n' "$UI_TITLE" "$title" "$UI_RESET"; fi
  if [[ "$number" == 4 ]]; then
   info 'Первый запуск: Docker собирает backend, выполняет Go-тесты и компиляцию.'
@@ -95,7 +97,7 @@ write_deployment(){
 prepare_selfsteal(){
  local domain
  domain=$(python3 "$APP/lib/config.py" "$BASE" domain)
- if [[ -f "$SELFSTEAL_DIR/docker-compose.yml" && ! -f "$BASE/.selfsteal" ]]; then
+ if [[ -f "$SELFSTEAL_DIR/docker-compose.yml" && ! -f "$BASE/.selfsteal" && ! -f "$BASE/.selfsteal-preparing" ]]; then
   DOMAIN=$domain
   validate_existing_selfsteal || return 1
   backup_existing_selfsteal || return 1
@@ -232,9 +234,10 @@ volumes:
   caddy-config:
 EOF
  if [[ -f "$BASE/selfsteal-existing.json" ]]; then configure_existing_volumes || return 1; fi
- compose config --quiet
+ compose config --quiet || return 1
  # Native SelfSteal commands operate the same project from their original path.
  ln -sfn "$BASE/compose.yaml" "$SELFSTEAL_DIR/docker-compose.yml"
+ rm -f "$BASE/.selfsteal-preparing"
 }
 write_compose(){
  if [[ -f "$BASE/.selfsteal" ]]; then write_selfsteal_compose; return; fi
@@ -303,10 +306,16 @@ verify_deployment(){
 }
 install_new(){
  wizard_reset
+ WIZARD_BACK=0
  terminal_clear
  local rc=0
  install_flow || rc=$?
  if ((rc)); then rollback_existing_selfsteal || warn 'Не удалось восстановить SelfSteal; резервная копия сохранена в backups'; fi
+ if [[ "$WIZARD_BACK" == 1 ]]; then
+  ui_status skipped 'Возврат в меню установки. Завершённые операции сохранены.'
+  INSTALL_WIZARD=0
+  return 0
+ fi
  if ((rc)) && [[ "${UI_FINISHED:-0}" != 1 ]]; then screen_finish error; fi
  INSTALL_WIZARD=0
  return "$rc"
@@ -353,6 +362,7 @@ install_flow(){
  UI_FINISHED=0
  check_connectivity || return 1
  print_step 2 'Настройка WEB Proxy'
+ stage_navigation 2 'Настройка WEB Proxy' || { WIZARD_BACK=1; return 2; }
  info 'WEB Proxy использует HTTPS :443; SelfSteal :9443 доступен только локально.'
  while :; do
   ask DOMAIN 'Домен прокси (без https://)' "${DOMAIN:-}" || return 1
@@ -363,8 +373,8 @@ install_flow(){
  summary_add 'Домен' "$DOMAIN"
  summary_add 'Порт WEB Proxy' 443
  local selected
- select_menu 'WEB-транспорт' selected 'iPhone / все платформы — https' 'Поддерживаемые клиенты — https-lanes' || return 1
- case "$selected" in 0) MODE=https;; 1) MODE=https-lanes;; esac
+ select_menu 'WEB-транспорт' selected 'iPhone / все платформы — https' 'Поддерживаемые клиенты — https-lanes' 'Назад' || { WIZARD_BACK=1; return 2; }
+ case "$selected" in 0) MODE=https;; 1) MODE=https-lanes;; *) WIZARD_BACK=1; return 2;; esac
  summary_add 'Режим' "$MODE"
  INSTALL_SECRET=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
  printf '\n%sРегистрация в @MTProxybot%s\n' "$UI_TITLE" "$UI_RESET"
@@ -567,7 +577,7 @@ menu_selfsteal(){
  while :; do
   select_menu 'Сайт SelfSteal и TLS' choice 'Выбрать шаблон сайта' 'Состояние и сертификат' 'Обновить сертификат' 'Перевыпустить сертификат' 'Редактировать конфигурацию' 'Размер журналов' 'Очистить журналы' 'Инструкция SelfSteal' 'Назад' || return 0
   case "$choice" in
-   0) action=template;; 1) action=status;; 2) action=renew-ssl;;
+   0) menu_templates; continue;; 1) action=status;; 2) action=renew-ssl;;
    3) action=reissue-cert;; 4) action=edit;; 5) action=logs-size;;
    6) action=clean-logs;; 7) action=guide;; 8) return 0;;
   esac

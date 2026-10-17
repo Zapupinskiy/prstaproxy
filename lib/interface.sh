@@ -4,6 +4,10 @@ source "$APP/lib/ui.sh"
 print_step(){ screen_begin "$1" "$2"; }
 menu_header(){ print_header 'ПРОСТОВПН WEB PROXY'; }
 terminal_animated(){ [[ -t 1 && "${TERM:-dumb}" != dumb ]]; }
+show_log_tail(){
+ # Upstream programs keep their original logs; terminal details use our neutral palette.
+ tail -n "$1" "$2" | sed -E $'s/\033\\[[0-9;]*[A-Za-z]//g'
+}
 run_live_log(){
  local logfile pid rc=0 frame=0 start=$SECONDS frames='|/-\\'
  logfile=$(mktemp)
@@ -19,19 +23,19 @@ run_live_log(){
  if terminal_animated; then printf '\r\033[K'; fi
  if ((rc)); then
   ui_status error "Ошибка операции (код $rc)"
-  tail -n 15 "$logfile"
+  show_log_tail 15 "$logfile"
   warn "Полный журнал: $LOG"
  else
   ui_status success "Выполнено · $((SECONDS-start)) с"
   # Details appear once, not once per animation frame.
-  tail -n 6 "$logfile"
+  show_log_tail 6 "$logfile"
  fi
  rm -f -- "$logfile"
  return "$rc"
 }
 check_connectivity(){
  ui_status running 'Проверка доступности сети: Telegram и сервисы РФ'
- local telegram_ok=0 ru_ok=0 service confirm
+ local telegram_ok=0 ru_ok=0 service
  curl -sS --connect-timeout 5 --max-time 8 -o /dev/null https://api.telegram.org && telegram_ok=1
  for service in https://ya.ru https://mail.ru https://vk.com https://ok.ru https://www.rambler.ru; do
   if curl -fsS --connect-timeout 5 --max-time 8 -o /dev/null "$service"; then ru_ok=$((ru_ok+1)); fi
@@ -39,32 +43,76 @@ check_connectivity(){
  printf 'Telegram: %s, сервисы РФ: %s/5\n' "$telegram_ok" "$ru_ok"
  if ((telegram_ok==0 || ru_ok<3)); then
   warn 'Обнаружены проблемы с сетью. Проверка не гарантирует доступность прокси из РФ.'
-  ask confirm 'Продолжить установку? (yes/no)' no || { ui_status error 'Проверка сети отменена'; return 1; }
-  [[ "$confirm" == yes ]] || { ui_status error 'Проверка сети отменена'; return 1; }
+  yesno 'Продолжить установку при сетевых ограничениях?' || { ui_status error 'Проверка сети отменена'; return 1; }
   ui_status warning 'Сетевые ограничения: продолжаем по вашему выбору'; return 0
  fi
  ui_status success 'Проверка сети завершена'
 }
-# Numeric choices follow the reference's command dashboard; existing submenus reuse this selector.
+menu_read_key(){
+ local key rest
+ MENU_KEY=
+ IFS= read -r -s -n1 key </dev/tty || return 1
+ case "$key" in
+  '') MENU_KEY=ENTER;;
+  $'\033')
+   rest=; IFS= read -r -s -n1 -t 0.15 rest </dev/tty || true
+   if [[ "$rest" == '[' || "$rest" == O ]]; then
+    IFS= read -r -s -n1 -t 0.15 rest </dev/tty || true
+    case "$rest" in A) MENU_KEY=UP;; B) MENU_KEY=DOWN;; esac
+   else MENU_KEY=BACK; fi;;
+  k|K) MENU_KEY=UP;; j|J) MENU_KEY=DOWN;;
+ esac
+}
+render_menu_items(){
+ local selected=$1 item_index=0 item color prefix
+ shift
+ for item in "$@"; do
+  color=$UI_RESET; prefix='  '
+  [[ "$item" != Назад ]] || color=$'\033[90m'
+  if ((item_index==selected)); then
+   prefix='❯ '
+   [[ "$item" == Назад ]] || color=$UI_TITLE
+  fi
+  printf '  %s%s%s%s\n' "$color" "$prefix" "$item" "$UI_RESET"
+  item_index=$((item_index+1))
+ done
+}
 select_menu(){
- local title=$1 outvar=$2 answer i; shift 2
+ local title=$1 outvar=$2 selected_index=0 count; shift 2
  local items=("$@")
  RESULT_OPEN=0
- if [[ "${INSTALL_WIZARD:-0}" == 1 ]]; then
-  printf '\n%s%s%s\n' "$UI_TITLE" "$title" "$UI_RESET"
- else
-  dashboard >/dev/null
-  terminal_clear; menu_header
-  printf '%s\n\n%s\n' "$DASH_TEXT" "$title"
- fi
- for ((i=0;i<${#items[@]};i++)); do printf '  %s. %s\n' "$((i+1))" "${items[i]}"; done
+ if [[ "${INSTALL_WIZARD:-0}" != 1 ]]; then dashboard >/dev/null; fi
+ count=${#items[@]}
  while :; do
-  ask answer 'Выберите пункт' || return 1
-  if [[ "$answer" =~ ^[0-9]{1,2}$ ]] && ((10#$answer>=1 && 10#$answer<=${#items[@]})); then
-   printf -v "$outvar" '%s' "$((10#$answer-1))"; return 0
+  if [[ "${INSTALL_WIZARD:-0}" == 1 ]]; then
+   screen_begin "${UI_STAGE_ID:-2}" "$title"
+  else
+   terminal_clear; menu_header
+   printf '%s\n\n%s%s%s\n\n' "$DASH_TEXT" "$UI_TITLE" "$title" "$UI_RESET"
   fi
-  warn 'Введите номер пункта меню'
+  render_menu_items "$selected_index" "${items[@]}"
+  printf '\n  ↑/↓ — выбор · Enter — открыть · Esc — назад\n'
+  menu_read_key || return 1
+  case "$MENU_KEY" in
+   UP) selected_index=$(((selected_index+count-1)%count));;
+   DOWN) selected_index=$(((selected_index+1)%count));;
+   ENTER) printf -v "$outvar" '%s' "$selected_index"; return 0;;
+   BACK) return 2;;
+  esac
  done
+}
+wait_back(){
+ result_end
+ printf '\n  \033[90m❯ Назад\033[0m\n'
+ while menu_read_key; do
+  [[ "$MENU_KEY" != ENTER && "$MENU_KEY" != BACK ]] || return 0
+ done
+}
+stage_navigation(){
+ local navigation
+ [[ "${INSTALL_WIZARD:-0}" == 1 && -t 1 && -r /dev/tty ]] || return 0
+ select_menu "$2" navigation 'Продолжить' 'Назад' || return 2
+ [[ "$navigation" == 0 ]] || return 2
 }
 require_installation(){ [[ "$(backend_type)" != none ]] || { warn 'Прокси ещё не установлен'; return 1; }; }
 service_action(){
@@ -123,7 +171,7 @@ uninstall_project(){
   compose down -v || return 1
   rm -rf -- /opt/prostoweb/config /opt/caddy/html
   rm -f -- /opt/prostoweb/compose.yaml /opt/prostoweb/Caddyfile /opt/prostoweb/.installed /opt/prostoweb/.selfsteal /opt/prostoweb/public-ip /opt/prostoweb/info.txt
-  rm -f -- /opt/prostoweb/selfsteal-existing.json /opt/prostoweb/.selfsteal-handoff
+  rm -f -- /opt/prostoweb/selfsteal-existing.json /opt/prostoweb/.selfsteal-handoff /opt/prostoweb/.selfsteal-preparing
   rm -f -- /opt/caddy/Caddyfile /opt/caddy/zlp.Caddyfile /opt/caddy/.env /opt/caddy/docker-compose.yml
   ok 'Контейнеры, настройки, сайт и Compose volumes удалены. Установщик и резервные копии сохранены.'
  else
@@ -157,28 +205,84 @@ dispatch_command(){
     secret) require_installation && menu_secret;;
     qr) require_installation && webmtproxy qr;;
     tls-domain|set-tls) require_installation && menu_selfsteal;;
+    --templates) require_installation && menu_templates;;
     backup) backup_project;;
     uninstall) uninstall_project;;
     *) warn "Неизвестная команда: $action"; show_manage_help; return 1;;
    esac;;
  esac
 }
+menu_installation(){
+ local choice
+ while :; do
+  select_menu 'Установка' choice 'Установить / продолжить установку' 'Обновить проект' 'Резервная копия' 'Удалить прокси' 'Назад' || return 0
+  [[ "$choice" != 4 ]] || return 0
+  result_begin
+  case "$choice" in
+   0) install_new;; 1) update_project;; 2) backup_project;; 3) uninstall_project;;
+  esac || warn 'Операция не завершена'
+  wait_back
+ done
+}
+menu_templates(){
+ local choice template
+ local labels=('Случайный шаблон' '10gag' 'Convertit' 'Converter' 'Downloader' 'FileCloud' 'Games-site' 'ModManager' 'SpeedTest' 'YouTube' '503 Error v1' '503 Error v2' 'Назад')
+ while :; do
+  select_menu 'Шаблоны SelfSteal' choice "${labels[@]}" || return 0
+  [[ "$choice" != 12 ]] || return 0
+  template=$choice; [[ "$choice" != 0 ]] || template=random
+  result_begin
+  BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" --zlp-template "$template" || warn 'Не удалось загрузить шаблон'
+  wait_back
+ done
+}
+menu_access(){
+ local choice
+ while :; do
+  select_menu 'Доступ и секрет' choice 'Ссылка подключения' 'QR-код' 'Сменить / посмотреть секрет' 'Назад' || return 0
+  case "$choice" in
+   0) result_begin; webmtproxy link || true; wait_back;;
+   1) result_begin; webmtproxy qr || true; wait_back;;
+   2) menu_secret;; 3) return 0;;
+  esac
+ done
+}
+menu_management(){
+ local choice
+ while :; do
+  select_menu 'Настройки' choice 'Доступ и секрет' 'Транспорт и спонсор' 'Сервисы и диагностика' 'Сайт SelfSteal и TLS' 'О проекте' 'Назад' || return 0
+  case "$choice" in
+   0) menu_access;; 1) menu_connection;; 2) menu_system;; 3) menu_selfsteal;;
+   4) result_begin; dispatch_command version; wait_back;; 5) return 0;;
+  esac
+ done
+}
+menu_connection(){
+ local choice
+ while :; do
+  select_menu 'Транспорт и спонсор' choice 'Режим передачи' 'Спонсорский тег' 'Назад' || return 0
+  case "$choice" in 0) menu_transport;; 1) menu_sponsor;; 2) return 0;; esac
+ done
+}
+menu_system(){
+ local choice
+ while :; do
+  select_menu 'Сервисы и диагностика' choice 'Управление сервисами' 'Статистика' 'Диагностика' 'Назад' || return 0
+  case "$choice" in
+   0) if [[ "$(backend_type)" == containers ]]; then menu_containers; else menu_services; fi;;
+   1) result_begin; dashboard; wait_back;;
+   2) result_begin; if [[ "$(backend_type)" == containers ]]; then compose ps; compose logs --tail 40; else menu_diag; fi; wait_back;;
+   3) return 0;;
+  esac
+ done
+}
 main_menu(){
  require_root
  local choice
  while :; do
-  select_menu 'Управление WEB Proxy' choice 'Установка прокси' 'Состояние / обновить дашборд' 'Запустить' 'Остановить' 'Перезапустить' 'Журнал' 'Ссылка подключения' 'Статистика' 'Сайт и TLS' 'Спонсорский тег' 'Резервная копия' 'Обновить проект' 'Версия' 'Удалить прокси' 'Настройки WEB Proxy' 'Выход' || return 1
+  select_menu 'Главное меню' choice 'Установка' 'Обновить (дашборд)' 'Настройки' 'Выход' || return 0
   case "$choice" in
-   15) return 0;;
-   14) menu_management; continue;;
+   0) menu_installation;; 1) continue;; 2) menu_management;; 3) return 0;;
   esac
-  result_begin
-  case "$choice" in
-   0) install_new;; 1) dashboard;; 2) service_action start;; 3) service_action stop;;
-   4) service_action restart;; 5) service_action logs;; 6) webmtproxy link;; 7) dashboard;;
-   8) menu_selfsteal;; 9) menu_sponsor;; 10) backup_project;; 11) update_project;;
-   12) dispatch_command version;; 13) uninstall_project;;
-  esac || warn 'Операция не завершена'
-  wait_back
  done
 }

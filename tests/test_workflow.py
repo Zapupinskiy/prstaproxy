@@ -207,5 +207,45 @@ install_new
             self.assertIn('\x1b[90m−\x1b[0m 2', final_screen)
             self.assertNotIn('unexpected-prompt', output)
 
+    def test_arrow_selection_and_back_are_gray(self):
+        output = self.shell('''
+dashboard(){ DASH_TEXT=status; }
+keys=(DOWN ENTER); key_index=0
+menu_read_key(){ MENU_KEY=${keys[key_index]}; key_index=$((key_index+1)); }
+select_menu settings selected 'Секрет' 'Назад'
+[[ "$selected" == 1 ]]
+''')
+        self.assertIn('\x1b[90m❯ Назад', output)
+        self.assertNotIn('1. Секрет', output)
+
+    def test_escape_returns_to_parent_menu(self):
+        self.shell('''
+dashboard(){ DASH_TEXT=; }
+menu_read_key(){ MENU_KEY=BACK; }
+if select_menu settings selected 'Секрет' 'Назад'; then exit 99; else [[ $? == 2 ]]; fi
+''')
+
+    def test_access_menu_routes_to_secret_submenu(self):
+        output = self.shell('''
+menu_index=0
+select_menu(){
+ if ((menu_index==0)); then printf -v "$2" '%s' 2; else printf -v "$2" '%s' 3; fi
+ menu_index=$((menu_index+1))
+}
+menu_secret(){ echo SECRET-SUBMENU; }
+menu_access
+''')
+        self.assertIn('SECRET-SUBMENU', output)
+
+    def test_back_before_stage_prevents_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.shell('''
+LOG="$2/log"; WIZARD_BACK=0
+stage_navigation(){ return 2; }
+if stage 3 configuration bash -c 'exit 99'; then exit 98; else [[ $? == 2 ]]; fi
+[[ "$WIZARD_BACK" == 1 ]]
+[[ ! -e "$LOG" ]]
+''', Path(temporary).as_posix())
+
 if __name__ == '__main__':
     unittest.main()

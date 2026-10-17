@@ -11,7 +11,11 @@ warn(){ printf "\033[33m[!]%s %s\n" "$clear" "$*"; }
 ok(){ printf '%s[✓]%s %s\n' "$green" "$clear" "$*"; }
 die(){ printf '%s✗%s %s\n' "$red" "$clear" "$*" >&2; exit 1; }
 ask(){ local dest=$1 label=$2 default=${3:-} ans; read -r -p "$label${default:+ [Enter = $default]}: " ans </dev/tty || return 1; printf -v "$dest" '%s' "${ans:-$default}"; }
-yesno(){ local reply; read -r -p "$1 [y/N]: " reply </dev/tty; [[ "$reply" =~ ^[Yy]$ ]]; }
+yesno(){
+ local reply
+ select_menu "$1" reply 'Нет' 'Да' 'Назад' || return 1
+ [[ "$reply" == 1 ]]
+}
 port_busy(){ ss -H -ltn "( sport = :$1 )" | grep -q .; }
 choose_relay_ports(){
  local p q

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reuse a native SelfSteal Caddy installation without reinstalling its site/TLS data.
 existing_selfsteal(){
- [[ ! -f "$BASE/.selfsteal" && -f "$SELFSTEAL_DIR/docker-compose.yml" &&
+ [[ ! -f "$BASE/.selfsteal" && ! -f "$BASE/.selfsteal-preparing" && -f "$SELFSTEAL_DIR/docker-compose.yml" &&
     -f "$SELFSTEAL_DIR/.env" && -f "$SELFSTEAL_DIR/Caddyfile" &&
     -s "$SELFSTEAL_DIR/html/index.html" ]]
 }
