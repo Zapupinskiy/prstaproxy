@@ -355,6 +355,7 @@ main_menu(){
 APP=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$APP/lib/core.sh"
 source "$APP/lib/interface.sh"
+source "$APP/lib/selfsteal_existing.sh"
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
  case "${1:-}" in
   --install-menu|--update-menu) register_commands;;

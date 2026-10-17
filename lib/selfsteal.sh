@@ -29,6 +29,16 @@ WEB_SERVER=caddy
 VOLUME_PREFIX=caddy
 # Native validation runs a temporary container; include the managed import.
 docker(){
+ if [[ -f "$ZLP_BASE/selfsteal-existing.json" && "${1:-}" == run ]]; then
+  local original_image argument
+  local adjusted=()
+  original_image=$(python3 "$ZLP_APP/lib/selfsteal_existing.py" "$ZLP_BASE" --image) || return 1
+  for argument in "$@"; do
+   [[ "$argument" != "caddy:${CADDY_VERSION}" ]] || argument=$original_image
+   adjusted+=("$argument")
+  done
+  set -- "${adjusted[@]}"
+ fi
  if [[ "${1:-}" == run && " $* " == *' caddy validate '* && -f "$APP_DIR/zlp.Caddyfile" ]]; then
   shift
   command docker run -v "$APP_DIR/zlp.Caddyfile:/etc/caddy/zlp.Caddyfile:ro" "$@"

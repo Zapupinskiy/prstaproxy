@@ -52,7 +52,7 @@ mkdir -p "$base/app/releases"
 tmp=$(mktemp -d "$base/app/releases/download.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
 bootstrap_stage 'Загрузка проекта GitHub' git clone --depth 1 https://github.com/Zapupinskiy/prstaproxy.git "$tmp"
-for file in prstaproxy.sh lib/core.sh lib/interface.sh lib/ui.sh lib/selfsteal.sh vendor/selfsteal.sh; do bash -n "$tmp/$file"; done
+for file in prstaproxy.sh lib/core.sh lib/interface.sh lib/ui.sh lib/selfsteal_existing.sh lib/selfsteal.sh vendor/selfsteal.sh; do bash -n "$tmp/$file"; done
 release="$base/app/releases/$(git -C "$tmp" rev-parse HEAD)"
 if [[ ! -d "$release" ]]; then mv "$tmp" "$release"; fi
 ln -sfn "$release" "$base/app/current.new"

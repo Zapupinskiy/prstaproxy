@@ -91,8 +91,9 @@ prepare_selfsteal(){
  local domain
  domain=$(python3 "$APP/lib/config.py" "$BASE" domain)
  if [[ -f "$SELFSTEAL_DIR/docker-compose.yml" && ! -f "$BASE/.selfsteal" ]]; then
-  echo 'Обнаружена отдельная установка SelfSteal. Она не будет перезаписана; требуется перенос её Compose в общий проект.'
-  return 1
+  DOMAIN=$domain
+  validate_existing_selfsteal || return 1
+  backup_existing_selfsteal || return 1
  fi
  if [[ -f /opt/nginx-selfsteal/docker-compose.yml ]]; then
   echo 'Обнаружен SelfSteal Nginx. Общая установка требует Caddy; автоматическая замена Nginx отключена.'; return 1
@@ -106,14 +107,18 @@ prepare_selfsteal(){
   mkdir -p "$SELFSTEAL_DIR/html"
   cp -a "$BASE/site/." "$SELFSTEAL_DIR/html/"
  fi
- BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" --zlp-prepare "$domain"
+ if [[ -f "$BASE/selfsteal-existing.json" ]]; then
+  ui_status skipped 'SelfSteal уже установлен: установка Caddy и шаблона сайта пропущена'
+ else
+  BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" --zlp-prepare "$domain" || return 1
+ fi
  python3 "$APP/lib/selfsteal_config.py" "$BASE" "$SELFSTEAL_DIR"
 }
 snapshot_deployment(){
  local destination=$1 file
  mkdir -m 700 "$destination"
  cp -a "$BASE/config" "$BASE/compose.yaml" "$destination/"
- for file in Caddyfile .selfsteal .installed; do
+ for file in Caddyfile .selfsteal .installed selfsteal-existing.json .selfsteal-handoff; do
   [[ ! -e "$BASE/$file" ]] || cp -a "$BASE/$file" "$destination/"
  done
  if [[ -d "$SELFSTEAL_DIR" ]]; then cp -a "$SELFSTEAL_DIR" "$destination/selfsteal"; fi
@@ -157,12 +162,13 @@ resume_deployment(){
 }
 build_deployment(){
  compose build --pull || return 1
- if [[ -f "$BASE/.selfsteal" ]]; then BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" --zlp-image; fi
+ if [[ -f "$BASE/.selfsteal" && ! -f "$BASE/selfsteal-existing.json" ]]; then BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" --zlp-image; fi
 }
 start_deployment(){
  if [[ -f "$BASE/.selfsteal" ]]; then
   BASE="$BASE" SELFSTEAL_DIR="$SELFSTEAL_DIR" bash "$APP/lib/selfsteal.sh" --zlp-validate || return 1
  fi
+ handoff_existing_selfsteal || return 1
  compose up -d "$@"
 }
 
@@ -220,6 +226,7 @@ volumes:
   caddy-data:
   caddy-config:
 EOF
+ if [[ -f "$BASE/selfsteal-existing.json" ]]; then configure_existing_volumes || return 1; fi
  compose config --quiet
  # Native SelfSteal commands operate the same project from their original path.
  ln -sfn "$BASE/compose.yaml" "$SELFSTEAL_DIR/docker-compose.yml"
@@ -294,6 +301,7 @@ install_new(){
  terminal_clear
  local rc=0
  install_flow || rc=$?
+ if ((rc)); then rollback_existing_selfsteal || warn 'Не удалось восстановить SelfSteal; резервная копия сохранена в backups'; fi
  if ((rc)) && [[ "${UI_FINISHED:-0}" != 1 ]]; then screen_finish error; fi
  INSTALL_WIZARD=0
  return "$rc"
@@ -308,6 +316,10 @@ install_flow(){
  touch "$LOG"; chmod 600 "$LOG"
  stage 0 'Проверка зависимостей и установка недостающего' dependencies || return 1
  summary_add 'Зависимости' 'проверены'
+ if existing_selfsteal; then
+  DOMAIN=${DOMAIN:-$(selfsteal_value SELF_STEAL_DOMAIN)}
+  summary_add 'SelfSteal' 'найден; повторная установка сайта будет пропущена'
+ fi
  if [[ "$(backend_type)" == containers && ! -f "$BASE/.installed" ]]; then
   info 'Продолжаю незавершённую установку, сохраняя домен и секрет.'
   touch "$LOG"; chmod 600 "$LOG"
@@ -391,9 +403,18 @@ install_flow(){
  webmtproxy link
 }
 check_install_network(){
- local port
+ local port reuse=0
+ if existing_selfsteal; then
+  validate_existing_selfsteal || return 1
+  reuse=1
+  ui_status skipped 'Существующий SelfSteal будет использован повторно'
+ fi
  for port in 80 443 9443; do
-  if port_busy "$port"; then warn "Порт $port занят. Освободи его перед установкой."; return 1; fi
+  if port_busy "$port"; then
+   if ((reuse)) && selfsteal_owns_port "$port"; then
+    ui_status skipped "Порт $port занят установленным SelfSteal — конфликт отсутствует"
+   else warn "Порт $port занят другой службой. Освободи его перед установкой."; return 1; fi
+  fi
  done
  check_dns
 }
@@ -600,8 +621,8 @@ update_project(){
 }
 validate_release(){
  local directory=$1 file
- for file in prstaproxy.sh install.sh lib/core.sh lib/interface.sh lib/ui.sh lib/selfsteal.sh vendor/selfsteal.sh docker/mtproxy-entrypoint.sh; do
+ for file in prstaproxy.sh install.sh lib/core.sh lib/interface.sh lib/ui.sh lib/selfsteal_existing.sh lib/selfsteal.sh vendor/selfsteal.sh docker/mtproxy-entrypoint.sh; do
   bash -n "$directory/$file" || return 1
  done
- python3 -m py_compile "$directory/lib/config.py" "$directory/lib/selfsteal_config.py"
+ python3 -m py_compile "$directory/lib/config.py" "$directory/lib/selfsteal_config.py" "$directory/lib/selfsteal_existing.py"
 }

@@ -124,6 +124,7 @@ uninstall_project(){
   compose down -v || return 1
   rm -rf -- /opt/prostoweb/config /opt/caddy/html
   rm -f -- /opt/prostoweb/compose.yaml /opt/prostoweb/Caddyfile /opt/prostoweb/.installed /opt/prostoweb/.selfsteal /opt/prostoweb/public-ip /opt/prostoweb/info.txt
+  rm -f -- /opt/prostoweb/selfsteal-existing.json /opt/prostoweb/.selfsteal-handoff
   rm -f -- /opt/caddy/Caddyfile /opt/caddy/zlp.Caddyfile /opt/caddy/.env /opt/caddy/docker-compose.yml
   ok 'Контейнеры, настройки, сайт и Compose volumes удалены. Установщик и резервные копии сохранены.'
  else
