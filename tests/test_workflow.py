@@ -183,5 +183,29 @@ stage 3 'SelfSteal' bash -c 'echo selfsteal-ready'
             self.assertIn('dns-checked', output)
             self.assertIn('selfsteal-ready', output)
 
+    def test_resumed_install_marks_settings_as_skipped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = self.shell('''
+BASE=$2; LOG="$BASE/install.log"
+require_root(){ :; }
+source(){ if [[ "$1" == /etc/os-release ]]; then ID=ubuntu; else builtin source "$@"; fi; }
+uname(){ echo x86_64; }
+backend_type(){ echo containers; }
+existing_selfsteal(){ return 1; }
+active_domain(){ echo proxy.example.com; }
+active_mode(){ echo https-lanes; }
+stage(){ screen_begin "$1" "$2"; screen_finish success; }
+register_commands(){ :; }
+write_info_file(){ :; }
+webmtproxy(){ echo preserved-web-link; }
+ask(){ echo unexpected-prompt; return 99; }
+install_new
+[[ "${UI_HISTORY_IDS[*]}" == '1 2 3 4 5 6' ]]
+''', Path(temporary).as_posix())
+            self.assertIn('Повторный ввод домена, режима и секрета пропущен', output)
+            final_screen = output.split('\x1b[2J\x1b[H')[-1]
+            self.assertIn('\x1b[90m−\x1b[0m 2', final_screen)
+            self.assertNotIn('unexpected-prompt', output)
+
 if __name__ == '__main__':
     unittest.main()

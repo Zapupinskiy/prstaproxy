@@ -330,6 +330,9 @@ install_flow(){
   touch "$LOG"; chmod 600 "$LOG"
   DOMAIN=$(active_domain); MODE=$(active_mode)
   summary_add 'Домен' "$DOMAIN"; summary_add 'Режим' "$MODE"
+  screen_begin 2 'Настройка WEB Proxy'
+  info 'Настройки сохранены. Повторный ввод домена, режима и секрета пропущен.'
+  screen_finish skipped
   stage 3 'SelfSteal и сохранённая конфигурация' resume_deployment || return 1
   stage 4 'Сборка WEB Proxy' build_deployment || return 1
   stage 5 'Запуск и проверка WEB Proxy' start_deployment || return 1
