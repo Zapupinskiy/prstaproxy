@@ -91,7 +91,6 @@ select_menu(){
    printf '%s\n\n%s%s%s\n\n' "$DASH_TEXT" "$UI_TITLE" "$title" "$UI_RESET"
   fi
   render_menu_items "$selected_index" "${items[@]}"
-  printf '\n  ↑/↓ — выбор · Enter — открыть · Esc — назад\n'
   menu_read_key || return 1
   case "$MENU_KEY" in
    UP) selected_index=$(((selected_index+count-1)%count));;
@@ -107,12 +106,6 @@ wait_back(){
  while menu_read_key; do
   [[ "$MENU_KEY" != ENTER && "$MENU_KEY" != BACK ]] || return 0
  done
-}
-stage_navigation(){
- local navigation
- [[ "${INSTALL_WIZARD:-0}" == 1 && -t 1 && -r /dev/tty ]] || return 0
- select_menu "$2" navigation 'Продолжить' 'Назад' || return 2
- [[ "$navigation" == 0 ]] || return 2
 }
 require_installation(){ [[ "$(backend_type)" != none ]] || { warn 'Прокси ещё не установлен'; return 1; }; }
 service_action(){

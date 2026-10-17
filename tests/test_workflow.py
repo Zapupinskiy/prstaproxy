@@ -237,14 +237,13 @@ menu_access
 ''')
         self.assertIn('SECRET-SUBMENU', output)
 
-    def test_back_before_stage_prevents_mutation(self):
+    def test_stage_runs_without_confirmation(self):
         with tempfile.TemporaryDirectory() as temporary:
             self.shell('''
-LOG="$2/log"; WIZARD_BACK=0
-stage_navigation(){ return 2; }
-if stage 3 configuration bash -c 'exit 99'; then exit 98; else [[ $? == 2 ]]; fi
-[[ "$WIZARD_BACK" == 1 ]]
-[[ ! -e "$LOG" ]]
+LOG="$2/log"; INSTALL_WIZARD=1
+select_menu(){ echo unexpected-confirmation; return 99; }
+stage 3 configuration bash -c 'echo AUTOMATIC-STAGE'
+grep -q AUTOMATIC-STAGE "$LOG"
 ''', Path(temporary).as_posix())
 
 if __name__ == '__main__':

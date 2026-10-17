@@ -10,7 +10,12 @@ info(){ printf '%s[•]%s %s\n' "$cyan" "$clear" "$*"; }
 warn(){ printf "\033[33m[!]%s %s\n" "$clear" "$*"; }
 ok(){ printf '%s[✓]%s %s\n' "$green" "$clear" "$*"; }
 die(){ printf '%s✗%s %s\n' "$red" "$clear" "$*" >&2; exit 1; }
-ask(){ local dest=$1 label=$2 default=${3:-} ans; read -r -p "$label${default:+ [Enter = $default]}: " ans </dev/tty || return 1; printf -v "$dest" '%s' "${ans:-$default}"; }
+ask(){
+ local dest=$1 label=$2 default=${3:-} ans
+ printf '\n%s%s\n' "$label" "${default:+ [по умолчанию: $default]}" >/dev/tty
+ read -r -p '> ' ans </dev/tty || return 1
+ printf -v "$dest" '%s' "${ans:-$default}"
+}
 yesno(){
  local reply
  select_menu "$1" reply 'Нет' 'Да' 'Назад' || return 1

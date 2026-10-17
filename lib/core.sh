@@ -28,7 +28,6 @@ stage(){
  local number=$1 title=$2; shift 2
  if [[ "${UI_STAGE_ID:-}" != "$number" ]]; then
   print_step "$number" "$title"
-  stage_navigation "$number" "$title" || { WIZARD_BACK=1; return 2; }
  else printf '\n%s%s%s\n' "$UI_TITLE" "$title" "$UI_RESET"; fi
  if [[ "$number" == 4 ]]; then
   info 'Первый запуск: Docker собирает backend, выполняет Go-тесты и компиляцию.'
@@ -362,8 +361,8 @@ install_flow(){
  UI_FINISHED=0
  check_connectivity || return 1
  print_step 2 'Настройка WEB Proxy'
- stage_navigation 2 'Настройка WEB Proxy' || { WIZARD_BACK=1; return 2; }
  info 'WEB Proxy использует HTTPS :443; SelfSteal :9443 доступен только локально.'
+ info 'Укажите домен без https://. Его A-запись должна указывать на IPv4 этого сервера.'
  while :; do
   ask DOMAIN 'Домен прокси (без https://)' "${DOMAIN:-}" || return 1
   DOMAIN=${DOMAIN,,}
@@ -387,12 +386,12 @@ install_flow(){
  ui_status "$([[ -n "$INSTALL_TAG" ]] && echo success || echo skipped)" 'Спонсорский тег'
  printf '\n%sОтправка ссылки через Telegram-бота (необязательно)%s\n' "$UI_TITLE" "$UI_RESET"
  local bot_token chat_id
- printf 'Bot Token (Enter = пропустить): ' >/dev/tty
+ printf 'Введите Bot Token для отправки ссылки. Пустой ввод — пропустить.\n> ' >/dev/tty
  read -r -s bot_token </dev/tty || return 1
  printf '\n' >/dev/tty
  chat_id=
  if [[ -n "$bot_token" ]]; then
-  ask chat_id 'Chat ID' || return 1
+  ask chat_id 'Введите Chat ID получателя ссылки (числовой ID пользователя или чата)' || return 1
   [[ "$bot_token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ && "$chat_id" =~ ^-?[0-9]+$ ]] || { warn 'Некорректный Bot Token или Chat ID'; return 1; }
  fi
  if [[ -n "$bot_token" ]]; then
