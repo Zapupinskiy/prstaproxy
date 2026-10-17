@@ -26,7 +26,12 @@ EOF
 # A failed stage is waited on explicitly; background jobs cannot kill the menu.
 stage(){
  local number=$1 title=$2; shift 2
- print_step "$number" "$title"
+ if [[ "${UI_STAGE_ID:-}" != "$number" ]]; then print_step "$number" "$title"
+ else printf '\n%s%s%s\n' "$UI_TITLE" "$title" "$UI_RESET"; fi
+ if [[ "$number" == 4 ]]; then
+  info 'Первый запуск: Docker собирает backend, выполняет Go-тесты и компиляцию.'
+  info "Это может занять несколько минут. Подробности: tail -f $LOG"
+ fi
  local rc=0
  run_live_log env APP="$APP" BASE="$BASE" LOG="$LOG" DOMAIN="$DOMAIN" MODE="$MODE" \
   INSTALL_SECRET="${INSTALL_SECRET:-}" INSTALL_TAG="${INSTALL_TAG:-}" SELFSTEAL_DIR="$SELFSTEAL_DIR" \
@@ -314,24 +319,26 @@ install_flow(){
  [[ $(uname -m) == x86_64 ]] || { warn 'MTProxy требует x86_64'; return 1; }
  mkdir -p "$BASE"; chmod 700 "$BASE"
  touch "$LOG"; chmod 600 "$LOG"
- stage 0 'Проверка зависимостей и установка недостающего' dependencies || return 1
+ stage 1 'Подготовка сервера' dependencies || return 1
  summary_add 'Зависимости' 'проверены'
  if existing_selfsteal; then
   DOMAIN=${DOMAIN:-$(selfsteal_value SELF_STEAL_DOMAIN)}
-  summary_add 'SelfSteal' 'найден; повторная установка сайта будет пропущена'
+  summary_add 'SelfSteal' 'найден'
  fi
  if [[ "$(backend_type)" == containers && ! -f "$BASE/.installed" ]]; then
   info 'Продолжаю незавершённую установку, сохраняя домен и секрет.'
   touch "$LOG"; chmod 600 "$LOG"
   DOMAIN=$(active_domain); MODE=$(active_mode)
   summary_add 'Домен' "$DOMAIN"; summary_add 'Режим' "$MODE"
-  stage 7 'SelfSteal и сохранённая конфигурация' resume_deployment || return 1
-  stage 8 'Сборка backend и образ SelfSteal' build_deployment || return 1
-  stage 9 'Проверка Caddy, запуск контейнеров и TLS' start_deployment || return 1
-  stage 10 'Проверка готовности и HTTPS' verify_deployment || return 1
+  stage 3 'SelfSteal и сохранённая конфигурация' resume_deployment || return 1
+  stage 4 'Сборка WEB Proxy' build_deployment || return 1
+  stage 5 'Запуск и проверка WEB Proxy' start_deployment || return 1
+  stage 5 'Проверка готовности и HTTPS' verify_deployment || return 1
   touch "$BASE/.installed"
   register_commands
   write_info_file
+  screen_begin 6 'Готово'
+  screen_finish success
   ok "Установка $VERSION завершена"
   webmtproxy link
   return 0
@@ -340,8 +347,9 @@ install_flow(){
  if [[ "$(backend_type)" != none ]]; then warn 'Прокси уже установлен. Используй zlp обновить; настройки сохраняются.'; return 0; fi
  mkdir -p "$BASE"; chmod 700 "$BASE"
  touch "$LOG"; chmod 600 "$LOG"
+ UI_FINISHED=0
  check_connectivity || return 1
- print_step 2 'Базовая настройка'
+ print_step 2 'Настройка WEB Proxy'
  info 'WEB Proxy использует HTTPS :443; SelfSteal :9443 доступен только локально.'
  while :; do
   ask DOMAIN 'Домен прокси (без https://)' "${DOMAIN:-}" || return 1
@@ -351,22 +359,20 @@ install_flow(){
  done
  summary_add 'Домен' "$DOMAIN"
  summary_add 'Порт WEB Proxy' 443
- screen_finish success
  local selected
  select_menu 'WEB-транспорт' selected 'iPhone / все платформы — https' 'Поддерживаемые клиенты — https-lanes' || return 1
  case "$selected" in 0) MODE=https;; 1) MODE=https-lanes;; esac
  summary_add 'Режим' "$MODE"
- screen_finish success
  INSTALL_SECRET=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
- print_step 4 'Регистрация прокси в Telegram'
+ printf '\n%sРегистрация в @MTProxybot%s\n' "$UI_TITLE" "$UI_RESET"
  printf '  1. Откройте @MTProxybot и отправьте /newproxy\n  2. Хост: %s:443\n  3. Секрет: %s\n' "$DOMAIN" "$INSTALL_SECRET"
  ask INSTALL_TAG 'AD_TAG от @MTProxybot: 32 hex (Enter = пропустить)' || return 1
  if [[ -n "$INSTALL_TAG" && ! "$INSTALL_TAG" =~ ^[0-9a-fA-F]{32}$ ]]; then
   warn 'AD_TAG должен содержать 32 hex символа'; return 1
  fi
  summary_add 'AD_TAG' "${INSTALL_TAG:-пропущен}"
- screen_finish "$([[ -n "$INSTALL_TAG" ]] && echo success || echo skipped)"
- print_step 5 'Telegram-бот для отправки ссылки (опционально)'
+ ui_status "$([[ -n "$INSTALL_TAG" ]] && echo success || echo skipped)" 'Спонсорский тег'
+ printf '\n%sОтправка ссылки через Telegram-бота (необязательно)%s\n' "$UI_TITLE" "$UI_RESET"
  local bot_token chat_id
  printf 'Bot Token (Enter = пропустить): ' >/dev/tty
  read -r -s bot_token </dev/tty || return 1
@@ -379,25 +385,26 @@ install_flow(){
  if [[ -n "$bot_token" ]]; then
   summary_add 'Telegram-бот' 'настроен (токен скрыт)'
   summary_add 'Chat ID' "$chat_id"
-  screen_finish success
+  ui_status success 'Telegram-бот настроен'
  else
   summary_add 'Telegram-бот' 'пропущен'
-  screen_finish skipped
+  ui_status skipped 'Отправка через Telegram-бота пропущена'
  fi
- stage 6 'Проверка портов и DNS → IPv4 сервера' check_install_network || return 1
- stage 7 'Нативная установка SelfSteal, сайт и конфигурация' write_deployment || return 1
- stage 8 'Сборка backend и образ SelfSteal' build_deployment || return 1
- stage 9 'Проверка Caddy, запуск SelfSteal и WEB Proxy' start_deployment || return 1
- stage 10 'Проверка готовности и HTTPS' verify_deployment || return 1
+ screen_finish success
+ stage 3 'Проверка домена, портов и SelfSteal' check_install_network || return 1
+ stage 3 'Подготовка SelfSteal, сайта и конфигурации' write_deployment || return 1
+ stage 4 'Сборка WEB Proxy' build_deployment || return 1
+ stage 5 'Запуск SelfSteal и WEB Proxy' start_deployment || return 1
+ stage 5 'Проверка готовности и HTTPS' verify_deployment || return 1
  touch "$BASE/.installed"
  register_commands
  write_info_file
  if [[ -n "$bot_token" ]]; then
-  screen_begin 11 'Отправка ссылки в Telegram'
-  if send_connection_message "$bot_token" "$chat_id"; then screen_finish success
-  else screen_finish warning; warn 'Ссылка не отправлена. Прокси установлен; ссылка доступна через zlp links.'; fi
+  printf '\nОтправка ссылки в Telegram\n'
+  if send_connection_message "$bot_token" "$chat_id"; then ui_status success 'Ссылка отправлена'
+  else ui_status warning 'Ссылка не отправлена'; warn 'Ссылка не отправлена. Прокси установлен; ссылка доступна через zlp links.'; fi
  fi
- screen_begin 12 'Готово'
+ screen_begin 6 'Готово'
  screen_finish success
  ok "ПРОСТОВПН WEB PROXY $VERSION установлен. Меню: zlp"
  webmtproxy link

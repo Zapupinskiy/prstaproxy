@@ -4,8 +4,9 @@ UI_HEADER=$'\033[34m'
 UI_TITLE=$'\033[36m'
 UI_LOADER=$'\033[35m'
 UI_RESET=$'\033[0m'
-declare -a UI_ANSWERS=() UI_HISTORY=()
+declare -a UI_ANSWERS=() UI_HISTORY=() UI_HISTORY_IDS=()
 UI_CURRENT=
+UI_STAGE_ID=
 terminal_clear(){ printf '\033[2J\033[H'; }
 print_header(){
  local title=$1 padding
@@ -25,22 +26,37 @@ ui_status(){
  esac
  printf '%s%s %s%s\n' "$color" "$symbol" "$label" "$UI_RESET"
 }
-summary_add(){ UI_ANSWERS+=("$1: $2"); }
+summary_add(){
+ local index
+ for ((index=0;index<${#UI_ANSWERS[@]};index++)); do
+  if [[ "${UI_ANSWERS[index]}" == "$1: "* ]]; then UI_ANSWERS[index]="$1: $2"; return 0; fi
+ done
+ UI_ANSWERS+=("$1: $2")
+}
 screen_begin(){
  terminal_clear
  print_header 'ПРОСТОВПН WEB PROXY'
- local row
- for row in "${UI_ANSWERS[@]}"; do printf '  %s\n' "$row"; done
- for row in "${UI_HISTORY[@]}"; do printf '  %s\n' "$row"; done
+ local row separator=''
+ for row in "${UI_ANSWERS[@]}"; do
+  case "$row" in
+   'Домен: '*|'Режим: '*|'SelfSteal: '*) printf '%s%s' "$separator" "$row"; separator=' · ';;
+  esac
+ done
+ [[ -z "$separator" ]] || printf '\n'
+ if ((${#UI_HISTORY[@]})); then printf '%s  ' "${UI_HISTORY[@]}"; printf '\n'; fi
  UI_FINISHED=0
+ UI_STAGE_ID=$1
  UI_CURRENT="ЭТАП $1. $2"
  printf '\n%s%s%s\n\n' "$UI_TITLE" "$UI_CURRENT" "$UI_RESET"
 }
 screen_finish(){
  UI_FINISHED=1
- local line
- printf -v line '%s' "$(ui_status "$1" "$UI_CURRENT")"
- UI_HISTORY+=("$line")
- printf '\n%s\n' "$line"
+ local line index found=0
+ line=$(ui_status "$1" "$UI_STAGE_ID")
+ for ((index=0;index<${#UI_HISTORY_IDS[@]};index++)); do
+  if [[ "${UI_HISTORY_IDS[index]}" == "$UI_STAGE_ID" ]]; then UI_HISTORY[index]=$line; found=1; break; fi
+ done
+ if ((found==0)); then UI_HISTORY_IDS+=("$UI_STAGE_ID"); UI_HISTORY+=("$line"); fi
+ printf '\n'; ui_status "$1" "$UI_CURRENT"
 }
-wizard_reset(){ UI_ANSWERS=(); UI_HISTORY=(); UI_CURRENT=; INSTALL_WIZARD=1; }
+wizard_reset(){ UI_ANSWERS=(); UI_HISTORY=(); UI_HISTORY_IDS=(); UI_CURRENT=; UI_STAGE_ID=; INSTALL_WIZARD=1; }

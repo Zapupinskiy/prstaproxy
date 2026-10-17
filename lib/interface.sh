@@ -3,35 +3,34 @@
 source "$APP/lib/ui.sh"
 print_step(){ screen_begin "$1" "$2"; }
 menu_header(){ print_header 'ПРОСТОВПН WEB PROXY'; }
+terminal_animated(){ [[ -t 1 && "${TERM:-dumb}" != dumb ]]; }
 run_live_log(){
- local logfile pid rc=0 cols=80 i line frame=0 frames='|/-\\'
+ local logfile pid rc=0 frame=0 start=$SECONDS frames='|/-\\'
  logfile=$(mktemp)
- "$@" >"$logfile" 2>&1 & pid=$!
- if [[ -t 1 ]]; then
-  cols=$(tput cols 2>/dev/null || echo 80)
-  printf '\n\n\n\n\n\n\n\n\n\n\n'
-  while kill -0 "$pid" 2>/dev/null; do
-   printf '\033[11A\033[K%s%s Выполняется%s\n' "$UI_LOADER" "${frames:frame%4:1}" "$UI_RESET"
-   frame=$((frame+1)); i=0
-   while IFS= read -r line; do printf '\033[K%s\n' "${line:0:cols}"; i=$((i+1)); done < <(tail -n 10 "$logfile")
-   for ((;i<10;i++)); do printf '\033[K\n'; done
-   sleep 0.1
-  done
- fi
+ ("$@" 2>&1 | tee -a "$LOG" >"$logfile") & pid=$!
+ # Never redraw a block of log lines: wrapping/terminal resizing corrupts cursor offsets.
+ while kill -0 "$pid" 2>/dev/null; do
+  if terminal_animated; then
+   printf '\r\033[K%s%s Выполняется · %02d:%02d%s' "$UI_LOADER" "${frames:frame%4:1}" "$(((SECONDS-start)/60))" "$(((SECONDS-start)%60))" "$UI_RESET"
+  fi
+  frame=$((frame+1)); sleep 0.2
+ done
  wait "$pid" || rc=$?
- if [[ -t 1 ]]; then
-  printf '\033[11A\033[K'; ui_status "$([[ $rc == 0 ]] && echo success || echo error)" 'Операция завершена'
-  i=0
-  while IFS= read -r line; do printf '\033[K%s\n' "${line:0:cols}"; i=$((i+1)); done < <(tail -n 10 "$logfile")
-  for ((;i<10;i++)); do printf '\033[K\n'; done
- else tail -n 10 "$logfile"; fi
- cat "$logfile" >> "$LOG"
+ if terminal_animated; then printf '\r\033[K'; fi
+ if ((rc)); then
+  ui_status error "Ошибка операции (код $rc)"
+  tail -n 15 "$logfile"
+  warn "Полный журнал: $LOG"
+ else
+  ui_status success "Выполнено · $((SECONDS-start)) с"
+  # Details appear once, not once per animation frame.
+  tail -n 6 "$logfile"
+ fi
  rm -f -- "$logfile"
- if ((rc)); then warn "Ошибка команды. Журнал: $LOG"; fi
  return "$rc"
 }
 check_connectivity(){
- screen_begin 1 'Проверка доступности сети'
+ ui_status running 'Проверка доступности сети: Telegram и сервисы РФ'
  local telegram_ok=0 ru_ok=0 service confirm
  curl -sS --connect-timeout 5 --max-time 8 -o /dev/null https://api.telegram.org && telegram_ok=1
  for service in https://ya.ru https://mail.ru https://vk.com https://ok.ru https://www.rambler.ru; do
@@ -40,11 +39,11 @@ check_connectivity(){
  printf 'Telegram: %s, сервисы РФ: %s/5\n' "$telegram_ok" "$ru_ok"
  if ((telegram_ok==0 || ru_ok<3)); then
   warn 'Обнаружены проблемы с сетью. Проверка не гарантирует доступность прокси из РФ.'
-  ask confirm 'Продолжить установку? (yes/no)' no || { screen_finish error; return 1; }
-  [[ "$confirm" == yes ]] || { screen_finish error; return 1; }
-  screen_finish warning; return 0
+  ask confirm 'Продолжить установку? (yes/no)' no || { ui_status error 'Проверка сети отменена'; return 1; }
+  [[ "$confirm" == yes ]] || { ui_status error 'Проверка сети отменена'; return 1; }
+  ui_status warning 'Сетевые ограничения: продолжаем по вашему выбору'; return 0
  fi
- screen_finish success
+ ui_status success 'Проверка сети завершена'
 }
 # Numeric choices follow the reference's command dashboard; existing submenus reuse this selector.
 select_menu(){
@@ -52,7 +51,7 @@ select_menu(){
  local items=("$@")
  RESULT_OPEN=0
  if [[ "${INSTALL_WIZARD:-0}" == 1 ]]; then
-  screen_begin 3 "$title"
+  printf '\n%s%s%s\n' "$UI_TITLE" "$title" "$UI_RESET"
  else
   dashboard >/dev/null
   terminal_clear; menu_header
